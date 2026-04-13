@@ -1,0 +1,338 @@
+import CampaignRecipient from "../models/CampaignRecipient.js";
+import CampaignActivityLog from "../models/CampaignActivityLog.js";
+import EmailCampaign, {
+  campaignGoals,
+  campaignStatuses,
+  campaignTypes,
+} from "../models/EmailCampaign.js";
+import EmailEvent from "../models/EmailEvent.js";
+import { buildCampaignDetailPayload, logCampaignActivity } from "../services/campaignService.js";
+
+const campaignPopulate = [
+  { path: "templateId", select: "name subject previewText" },
+  { path: "segmentId", select: "name" },
+];
+
+const buildListMatch = (query) => {
+  const match = {};
+
+  if (query.status && query.status !== "all") {
+    match.status = query.status;
+  }
+
+  if (query.type) {
+    match.type = query.type;
+  }
+
+  if (query.goal) {
+    match.goal = query.goal;
+  }
+
+  if (query.search?.trim()) {
+    const pattern = new RegExp(
+      query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      "i"
+    );
+
+    match.$or = [{ name: pattern }, { subject: pattern }, { fromEmail: pattern }];
+  }
+
+  return match;
+};
+
+const normalizeCampaignPayload = (payload) => ({
+  name: payload.name?.trim(),
+  type: payload.type,
+  goal: payload.goal || "clicks",
+  subject: payload.subject?.trim(),
+  previewText: payload.previewText?.trim() || "",
+  fromName: payload.fromName?.trim(),
+  fromEmail: payload.fromEmail?.trim().toLowerCase(),
+  replyTo: payload.replyTo?.trim().toLowerCase() || "",
+  templateId: payload.templateId || null,
+  segmentId: payload.segmentId || null,
+  status: payload.status || "draft",
+  scheduledAt: payload.scheduledAt || null,
+  sentAt: payload.sentAt || null,
+});
+
+const buildDuplicateCampaignName = async (baseName) => {
+  const escapedName = baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const existingCopies = await EmailCampaign.countDocuments({
+    name: new RegExp(`^${escapedName} Copy(?: \\d+)?$`, "i"),
+  });
+
+  return existingCopies ? `${baseName} Copy ${existingCopies + 1}` : `${baseName} Copy`;
+};
+
+const getCampaignMeta = async (_req, res) => {
+  return res.json({
+    types: campaignTypes,
+    goals: campaignGoals,
+    statuses: campaignStatuses,
+  });
+};
+
+const listCampaigns = async (req, res) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
+  const match = buildListMatch(req.query);
+
+  const [campaigns, total] = await Promise.all([
+    EmailCampaign.find(match)
+      .populate(campaignPopulate)
+      .sort({ updatedAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+    EmailCampaign.countDocuments(match),
+  ]);
+
+  return res.json({
+    data: campaigns,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit) || 1,
+    },
+  });
+};
+
+const getCampaignById = async (req, res) => {
+  const payload = await buildCampaignDetailPayload(req.params.id);
+
+  if (!payload) {
+    return res.status(404).json({ message: "Campaign not found" });
+  }
+
+  return res.json(payload);
+};
+
+const createCampaign = async (req, res) => {
+  try {
+    const campaign = await EmailCampaign.create(normalizeCampaignPayload(req.body));
+    await logCampaignActivity(campaign._id, "created", "Campaign created", {
+      status: campaign.status,
+    });
+
+    const payload = await buildCampaignDetailPayload(campaign._id);
+    return res.status(201).json(payload);
+  } catch (_error) {
+    return res.status(400).json({ message: "Unable to create campaign" });
+  }
+};
+
+const updateCampaign = async (req, res) => {
+  try {
+    const campaign = await EmailCampaign.findByIdAndUpdate(
+      req.params.id,
+      normalizeCampaignPayload(req.body),
+      {
+        returnDocument: "after",
+        runValidators: true,
+      }
+    );
+
+    if (!campaign) {
+      return res.status(404).json({ message: "Campaign not found" });
+    }
+
+    await logCampaignActivity(campaign._id, "updated", "Campaign updated", {
+      status: campaign.status,
+    });
+
+    const payload = await buildCampaignDetailPayload(campaign._id);
+    return res.json(payload);
+  } catch (_error) {
+    return res.status(400).json({ message: "Unable to update campaign" });
+  }
+};
+
+const deleteCampaign = async (req, res) => {
+  const campaign = await EmailCampaign.findByIdAndDelete(req.params.id);
+
+  if (!campaign) {
+    return res.status(404).json({ message: "Campaign not found" });
+  }
+
+  await Promise.all([
+    CampaignRecipient.deleteMany({ campaignId: req.params.id }),
+    CampaignActivityLog.deleteMany({ campaignId: req.params.id }),
+    EmailEvent.deleteMany({ campaignId: req.params.id }),
+  ]);
+
+  return res.json({ message: "Campaign deleted" });
+};
+
+const duplicateCampaign = async (req, res) => {
+  try {
+    const existingCampaign = await EmailCampaign.findById(req.params.id);
+
+    if (!existingCampaign) {
+      return res.status(404).json({ message: "Campaign not found" });
+    }
+
+    const duplicate = await EmailCampaign.create({
+      name: await buildDuplicateCampaignName(existingCampaign.name),
+      type: existingCampaign.type,
+      goal: existingCampaign.goal,
+      subject: existingCampaign.subject,
+      previewText: existingCampaign.previewText || "",
+      fromName: existingCampaign.fromName,
+      fromEmail: existingCampaign.fromEmail,
+      replyTo: existingCampaign.replyTo || "",
+      templateId: existingCampaign.templateId,
+      segmentId: existingCampaign.segmentId || null,
+      status: "draft",
+      scheduledAt: null,
+      sentAt: null,
+      totalRecipients: 0,
+      totals: {
+        sent: 0,
+        delivered: 0,
+        opens: 0,
+        uniqueOpens: 0,
+        clicks: 0,
+        uniqueClicks: 0,
+        bounces: 0,
+        complaints: 0,
+        unsubscribes: 0,
+        conversions: 0,
+        revenue: 0,
+      },
+    });
+
+    await logCampaignActivity(
+      duplicate._id,
+      "duplicated",
+      "Campaign duplicated from existing campaign",
+      {
+        sourceCampaignId: existingCampaign._id,
+      }
+    );
+
+    const payload = await buildCampaignDetailPayload(duplicate._id);
+    return res.status(201).json(payload);
+  } catch (error) {
+    return res.status(400).json({
+      message: error.message || "Unable to duplicate campaign",
+    });
+  }
+};
+
+const scheduleCampaign = async (req, res) => {
+  const campaign = await EmailCampaign.findByIdAndUpdate(
+    req.params.id,
+    {
+      status: "scheduled",
+      scheduledAt: req.body.scheduledAt || new Date(),
+    },
+    {
+      returnDocument: "after",
+      runValidators: true,
+    }
+  );
+
+  if (!campaign) {
+    return res.status(404).json({ message: "Campaign not found" });
+  }
+
+  await logCampaignActivity(campaign._id, "scheduled", "Campaign scheduled", {
+    scheduledAt: campaign.scheduledAt,
+  });
+
+  const payload = await buildCampaignDetailPayload(campaign._id);
+  return res.json(payload);
+};
+
+const pauseCampaign = async (req, res) => {
+  const campaign = await EmailCampaign.findByIdAndUpdate(
+    req.params.id,
+    { status: "paused" },
+    { returnDocument: "after", runValidators: true }
+  );
+
+  if (!campaign) {
+    return res.status(404).json({ message: "Campaign not found" });
+  }
+
+  await logCampaignActivity(campaign._id, "paused", "Campaign paused");
+  const payload = await buildCampaignDetailPayload(campaign._id);
+  return res.json(payload);
+};
+
+const resumeCampaign = async (req, res) => {
+  const existingCampaign = await EmailCampaign.findById(req.params.id);
+
+  if (!existingCampaign) {
+    return res.status(404).json({ message: "Campaign not found" });
+  }
+
+  const campaign = await EmailCampaign.findByIdAndUpdate(
+    req.params.id,
+    {
+      status: existingCampaign.scheduledAt ? "scheduled" : "draft",
+    },
+    { returnDocument: "after", runValidators: true }
+  );
+
+  await logCampaignActivity(campaign._id, "resumed", "Campaign resumed");
+  const payload = await buildCampaignDetailPayload(campaign._id);
+  return res.json(payload);
+};
+
+const archiveCampaign = async (req, res) => {
+  const campaign = await EmailCampaign.findByIdAndUpdate(
+    req.params.id,
+    { status: "archived" },
+    { returnDocument: "after", runValidators: true }
+  );
+
+  if (!campaign) {
+    return res.status(404).json({ message: "Campaign not found" });
+  }
+
+  await logCampaignActivity(campaign._id, "archived", "Campaign archived");
+  const payload = await buildCampaignDetailPayload(campaign._id);
+  return res.json(payload);
+};
+
+const markCampaignAsSent = async (req, res) => {
+  const campaign = await EmailCampaign.findByIdAndUpdate(
+    req.params.id,
+    {
+      status: "sent",
+      sentAt: req.body.sentAt || new Date(),
+    },
+    {
+      returnDocument: "after",
+      runValidators: true,
+    }
+  );
+
+  if (!campaign) {
+    return res.status(404).json({ message: "Campaign not found" });
+  }
+
+  await logCampaignActivity(campaign._id, "sent", "Campaign marked as sent", {
+    sentAt: campaign.sentAt,
+  });
+
+  const payload = await buildCampaignDetailPayload(campaign._id);
+  return res.json(payload);
+};
+
+export {
+  getCampaignMeta,
+  listCampaigns,
+  getCampaignById,
+  createCampaign,
+  updateCampaign,
+  deleteCampaign,
+  duplicateCampaign,
+  scheduleCampaign,
+  pauseCampaign,
+  resumeCampaign,
+  archiveCampaign,
+  markCampaignAsSent,
+};

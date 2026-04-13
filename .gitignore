@@ -1,0 +1,13 @@
+# environment files
+.env
+.en.example
+.env.local
+.env.development.local
+
+
+# node modules
+node_modules/
+
+# build folder (optional but recommended)
+build/
+dist/
