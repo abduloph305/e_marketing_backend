@@ -8,7 +8,7 @@ const buildToken = (adminId) =>
 const setAuthCookie = (res, token) => {
   res.cookie("token", token, {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: env.nodeEnv === "production" ? "none" : "lax",
     secure: env.nodeEnv === "production",
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
@@ -21,7 +21,9 @@ const loginAdmin = async (req, res) => {
     return res.status(400).json({ message: "Email and password are required" });
   }
 
-  const admin = await Admin.findOne({ email: email.toLowerCase() }).select("+password");
+  const admin = await Admin.findOne({ email: email.toLowerCase() }).select(
+    "+password",
+  );
 
   if (!admin) {
     return res.status(401).json({ message: "Invalid credentials" });
@@ -46,7 +48,7 @@ const loginAdmin = async (req, res) => {
 const logoutAdmin = async (_req, res) => {
   res.clearCookie("token", {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: env.nodeEnv === "production" ? "none" : "lax",
     secure: env.nodeEnv === "production",
   });
 
@@ -57,8 +59,4 @@ const getCurrentAdmin = async (req, res) => {
   return res.json({ admin: req.admin.toSafeObject() });
 };
 
-export {
-  loginAdmin,
-  logoutAdmin,
-  getCurrentAdmin,
-};
+export { loginAdmin, logoutAdmin, getCurrentAdmin };

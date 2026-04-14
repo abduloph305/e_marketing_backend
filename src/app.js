@@ -14,13 +14,24 @@ import { env } from "./config/env.js";
 
 const app = express();
 
+const allowedOrigins = new Set([
+  "http://localhost:5173",
+  "https://e-marketing-frontend.vercel.app",
+  ...env.clientUrls,
+]);
+
 app.use(
   cors({
-    origin: env.clientUrl,
-    credentials: true,
-  })
-);
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.has(origin)) {
+        return callback(null, true);
+      }
 
+      return callback(new Error(`Not allowed by CORS: ${origin}`));
+    },
+    credentials: true,
+  }),
+);
 
 app.use(express.json());
 app.use(cookieParser());
