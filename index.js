@@ -12,6 +12,14 @@ const startServer = async () => {
     console.log(`Server running on port ${env.port}`);
   });
 
+  const cors = require("cors");
+
+app.use(cors({
+  origin: "https://e-marketing-frontend.vercel.app",
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  credentials: true
+}));
+
   const runScheduledCampaigns = async () => {
     try {
       const results = await processDueScheduledCampaigns();
