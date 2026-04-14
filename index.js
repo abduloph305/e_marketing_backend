@@ -3,6 +3,7 @@ import connectDatabase from "./src/config/db.js";
 import { env } from "./src/config/env.js";
 import seedAdmin from "./src/scripts/seedAdmin.js";
 import { processDueScheduledCampaigns } from "./src/services/campaignDispatchService.js";
+import cors from "cors";
 
 const startServer = async () => {
   await connectDatabase();
@@ -12,7 +13,7 @@ const startServer = async () => {
     console.log(`Server running on port ${env.port}`);
   });
 
-  const cors = require("cors");
+
 
 app.use(cors({
   origin: "https://e-marketing-frontend.vercel.app",
