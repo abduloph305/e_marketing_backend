@@ -10,11 +10,48 @@ const inferDeviceType = (userAgent = "") => {
   return "desktop";
 };
 
+const EVENTBRIDGE_DETAIL_TYPE_MAP = {
+  emailsent: "send",
+  emaildelivered: "delivery",
+  emailopened: "open",
+  emailclicked: "click",
+  emailbounced: "bounce",
+  emailcomplaintreceived: "complaint",
+  emailrejected: "reject",
+  emaildeliverydelayed: "delivery_delay",
+  emailrenderingfailed: "rendering_failure",
+  emailsubscribed: "unsubscribe",
+};
+
+const normalizeEventTypeKey = (value = "") =>
+  value
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, "");
+
 const normalizeSnsBody = (body) =>
   body.Type === "Notification" && body.Message ? JSON.parse(body.Message) : body;
 
+const normalizeEventBridgeBody = (body) => {
+  if (!body || body.source !== "aws.ses" || !body["detail-type"]) {
+    return body;
+  }
+
+  const detailType = normalizeEventTypeKey(body["detail-type"]);
+
+  return {
+    ...body.detail,
+    source: body.source,
+    detailType,
+    eventType: EVENTBRIDGE_DETAIL_TYPE_MAP[detailType] || body.detail?.eventType || "",
+  };
+};
+
+const normalizeIncomingBody = (body) => normalizeEventBridgeBody(normalizeSnsBody(body));
+
 const resolveEventType = (payload) => {
-  const notificationType = (payload.eventType || payload.notificationType || "").toLowerCase();
+  const notificationType = normalizeEventTypeKey(payload.eventType || payload.notificationType || payload.detailType || "");
 
   const eventTypeMap = {
     send: "send",
@@ -31,11 +68,19 @@ const resolveEventType = (payload) => {
     unsubscribe: "unsubscribe",
   };
 
+  if (eventTypeMap[notificationType]) {
+    return eventTypeMap[notificationType];
+  }
+
+  if (EVENTBRIDGE_DETAIL_TYPE_MAP[notificationType]) {
+    return EVENTBRIDGE_DETAIL_TYPE_MAP[notificationType];
+  }
+
   return eventTypeMap[notificationType] || "";
 };
 
 const normalizeSesEventPayload = async (body) => {
-  const payload = normalizeSnsBody(body);
+  const payload = normalizeIncomingBody(body);
   const eventType = resolveEventType(payload);
   const mail = payload.mail || {};
   const tags = mail.tags || {};
@@ -43,6 +88,10 @@ const normalizeSesEventPayload = async (body) => {
   const recipientEmail =
     mail.destination?.[0] ||
     payload.delivery?.recipients?.[0] ||
+    payload.detail?.mail?.destination?.[0] ||
+    payload.detail?.bounce?.bouncedRecipients?.[0]?.emailAddress ||
+    payload.detail?.complaint?.complainedRecipients?.[0]?.emailAddress ||
+    payload.detail?.click?.linkTags?.recipientEmail?.[0] ||
     payload.bounce?.bouncedRecipients?.[0]?.emailAddress ||
     payload.complaint?.complainedRecipients?.[0]?.emailAddress ||
     payload.click?.linkTags?.recipientEmail?.[0] ||
@@ -73,6 +122,7 @@ const normalizeSesEventPayload = async (body) => {
     eventType,
     timestamp:
       payload[eventType]?.timestamp ||
+      payload.detail?.timestamp ||
       payload.deliveryDelay?.timestamp ||
       payload.renderingFailure?.timestamp ||
       mail.timestamp ||

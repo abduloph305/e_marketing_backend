@@ -7,6 +7,7 @@ import EmailCampaign, {
 } from "../models/EmailCampaign.js";
 import EmailEvent from "../models/EmailEvent.js";
 import { buildCampaignDetailPayload, logCampaignActivity } from "../services/campaignService.js";
+import { dispatchCampaign } from "../services/campaignDispatchService.js";
 
 const campaignPopulate = [
   { path: "templateId", select: "name subject previewText" },
@@ -221,11 +222,31 @@ const duplicateCampaign = async (req, res) => {
 };
 
 const scheduleCampaign = async (req, res) => {
+  const scheduledAtInput = req.body.scheduledAt || new Date();
+  const scheduledAt = new Date(scheduledAtInput);
+
+  if (Number.isNaN(scheduledAt.getTime())) {
+    return res.status(400).json({ message: "Invalid scheduled time" });
+  }
+
+  if (scheduledAt <= new Date()) {
+    try {
+      const result = await dispatchCampaign(req.params.id, { mode: "scheduled" });
+      return res.json({
+        message: "Campaign sent immediately because the scheduled time is due",
+        campaign: result.campaign,
+        sentCount: result.sentCount,
+      });
+    } catch (error) {
+      return res.status(400).json({ message: error.message || "Unable to send campaign" });
+    }
+  }
+
   const campaign = await EmailCampaign.findByIdAndUpdate(
     req.params.id,
     {
       status: "scheduled",
-      scheduledAt: req.body.scheduledAt || new Date(),
+      scheduledAt,
     },
     {
       returnDocument: "after",

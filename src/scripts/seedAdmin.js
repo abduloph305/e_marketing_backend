@@ -5,8 +5,6 @@ import { env } from "../config/env.js";
 import Admin from "../models/Admin.js";
 
 const seedAdmin = async () => {
-  await connectDatabase();
-
   const hashedPassword = await bcrypt.hash(env.adminPassword, 10);
 
   await Admin.findOneAndUpdate(
@@ -25,10 +23,18 @@ const seedAdmin = async () => {
   );
 
   console.log(`Admin seeded for ${env.adminEmail}`);
-  await mongoose.disconnect();
 };
 
-seedAdmin().catch((error) => {
-  console.error("Failed to seed admin", error);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1]?.endsWith("seedAdmin.js");
+
+if (isDirectRun) {
+  connectDatabase()
+    .then(seedAdmin)
+    .then(() => mongoose.disconnect())
+    .catch((error) => {
+      console.error("Failed to seed admin", error);
+      process.exit(1);
+    });
+}
+
+export default seedAdmin;
