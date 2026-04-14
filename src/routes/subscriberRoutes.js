@@ -1,12 +1,14 @@
 import express from "express";
 import {
   bulkSuppressSubscribers,
+  bulkReactivateSubscribers,
   bulkTagSubscribers,
   bulkUnsubscribeSubscribers,
   listSubscribers,
   filterSubscribers,
   getSubscriberById,
   getSubscriberMeta,
+  getSubscriberSummary,
   importSubscribersFromCsv,
   createSubscriber,
   updateSubscriber,
@@ -19,11 +21,13 @@ const router = express.Router();
 router.use(protectAdmin);
 
 router.get("/meta", getSubscriberMeta);
+router.get("/summary", getSubscriberSummary);
 router.get("/", listSubscribers);
 router.post("/filter", filterSubscribers);
 router.post("/bulk/tags", bulkTagSubscribers);
 router.post("/bulk/unsubscribe", bulkUnsubscribeSubscribers);
 router.post("/bulk/suppress", bulkSuppressSubscribers);
+router.post("/bulk/reactivate", bulkReactivateSubscribers);
 router.post("/import/csv", importSubscribersFromCsv);
 router.get("/:id", getSubscriberById);
 router.post("/", createSubscriber);

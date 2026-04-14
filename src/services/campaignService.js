@@ -2,6 +2,7 @@ import CampaignActivityLog from "../models/CampaignActivityLog.js";
 import CampaignRecipient from "../models/CampaignRecipient.js";
 import EmailCampaign from "../models/EmailCampaign.js";
 import EmailEvent from "../models/EmailEvent.js";
+import mongoose from "mongoose";
 
 const logCampaignActivity = async (campaignId, type, message, metadata = null) =>
   CampaignActivityLog.create({
@@ -82,10 +83,11 @@ const updateCampaignRecipientStatus = async ({
 };
 
 const updateCampaignCounters = async (campaignId) => {
+  const campaignObjectId = new mongoose.Types.ObjectId(String(campaignId));
   const [eventSummary, totalRecipients, uniqueOpens, uniqueClicks, unsubscribes, conversions, revenue] =
     await Promise.all([
       EmailEvent.aggregate([
-        { $match: { campaignId } },
+        { $match: { campaignId: campaignObjectId } },
         {
           $group: {
             _id: "$eventType",
@@ -99,7 +101,7 @@ const updateCampaignCounters = async (campaignId) => {
       CampaignRecipient.countDocuments({ campaignId, unsubscribedAt: { $ne: null } }),
       CampaignRecipient.countDocuments({ campaignId, convertedAt: { $ne: null } }),
       CampaignRecipient.aggregate([
-        { $match: { campaignId } },
+        { $match: { campaignId: campaignObjectId } },
         {
           $group: {
             _id: null,
@@ -152,6 +154,8 @@ const buildCampaignDetailPayload = async (campaignId) => {
     return null;
   }
 
+  const campaignObjectId = new mongoose.Types.ObjectId(String(campaign._id));
+
   const [activityTimeline, recipientProgress, recentEvents, topLinks, trendRows] = await Promise.all([
     CampaignActivityLog.find({ campaignId }).sort({ createdAt: -1 }).limit(20).lean(),
     CampaignRecipient.find({ campaignId })
@@ -165,7 +169,7 @@ const buildCampaignDetailPayload = async (campaignId) => {
       .select("recipientEmail eventType timestamp clickedLink bounceType complaintFeedbackType deviceType ipAddress")
       .lean(),
     EmailEvent.aggregate([
-      { $match: { campaignId, eventType: "click", clickedLink: { $ne: "" } } },
+      { $match: { campaignId: campaignObjectId, eventType: "click", clickedLink: { $ne: "" } } },
       {
         $group: {
           _id: "$clickedLink",
@@ -176,7 +180,7 @@ const buildCampaignDetailPayload = async (campaignId) => {
       { $limit: 5 },
     ]),
     EmailEvent.aggregate([
-      { $match: { campaignId, eventType: { $in: ["send", "delivery", "open", "click"] } } },
+      { $match: { campaignId: campaignObjectId, eventType: { $in: ["send", "delivery", "open", "click"] } } },
       {
         $group: {
           _id: {

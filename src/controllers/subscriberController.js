@@ -12,8 +12,8 @@ const normalizeTags = (tags = []) =>
     new Set(
       (Array.isArray(tags) ? tags : String(tags).split(","))
         .map((tag) => String(tag).trim())
-        .filter(Boolean)
-    )
+        .filter(Boolean),
+    ),
   );
 
 const normalizeCustomFields = (customFields = {}) => {
@@ -128,19 +128,22 @@ const buildDetailPayload = async (subscriber) => {
     return null;
   }
 
-  const [recentEmailEvents, campaignHistory, suppressionEntry] = await Promise.all([
-    EmailEvent.find({ recipientEmail: subscriber.email })
-      .sort({ timestamp: -1 })
-      .limit(12)
-      .select("eventType timestamp clickedLink bounceType complaintFeedbackType deviceType")
-      .lean(),
-    CampaignRecipient.find({ email: subscriber.email })
-      .sort({ updatedAt: -1 })
-      .limit(12)
-      .populate({ path: "campaignId", select: "name status subject" })
-      .lean(),
-    SuppressionEntry.findOne({ email: subscriber.email }).lean(),
-  ]);
+  const [recentEmailEvents, campaignHistory, suppressionEntry] =
+    await Promise.all([
+      EmailEvent.find({ recipientEmail: subscriber.email })
+        .sort({ timestamp: -1 })
+        .limit(12)
+        .select(
+          "eventType timestamp clickedLink bounceType complaintFeedbackType deviceType",
+        )
+        .lean(),
+      CampaignRecipient.find({ email: subscriber.email })
+        .sort({ updatedAt: -1 })
+        .limit(12)
+        .populate({ path: "campaignId", select: "name status subject" })
+        .lean(),
+      SuppressionEntry.findOne({ email: subscriber.email }).lean(),
+    ]);
 
   return {
     ...subscriber.toObject(),
@@ -164,6 +167,74 @@ const getSubscriberMeta = async (_req, res) =>
     statuses: subscriberStatuses,
     sources: subscriberSources,
   });
+
+const getSubscriberSummary = async (_req, res) => {
+  try {
+    const [statusCounts, sourceCounts, totals] = await Promise.all([
+      Subscriber.aggregate([
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
+      Subscriber.aggregate([
+        { $group: { _id: "$source", count: { $sum: 1 } } },
+      ]),
+      Subscriber.aggregate([
+        {
+          $group: {
+            _id: null,
+            total: { $sum: 1 },
+            averageEngagementScore: { $avg: "$engagementScore" },
+            totalOrders: { $sum: "$totalOrders" },
+            totalSpent: { $sum: "$totalSpent" },
+          },
+        },
+      ]),
+    ]);
+
+    const byStatus = statusCounts.reduce((accumulator, item) => {
+      accumulator[item._id] = item.count;
+      return accumulator;
+    }, {});
+
+    const bySource = sourceCounts
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5)
+      .map((item) => ({
+        source: item._id,
+        count: item.count,
+      }));
+
+    const total = totals[0]?.total || 0;
+
+    return res.json({
+      total,
+      byStatus,
+      bySource,
+      averageEngagementScore: Math.round(
+        totals[0]?.averageEngagementScore || 0,
+      ),
+      totalOrders: totals[0]?.totalOrders || 0,
+      totalSpent: Number(totals[0]?.totalSpent || 0),
+      activeCount: byStatus.subscribed || 0,
+      riskCount:
+        (byStatus.unsubscribed || 0) +
+        (byStatus.bounced || 0) +
+        (byStatus.complained || 0) +
+        (byStatus.suppressed || 0),
+    });
+  } catch (error) {
+    console.error("Unable to load subscriber summary", error);
+    return res.json({
+      total: 0,
+      byStatus: {},
+      bySource: [],
+      averageEngagementScore: 0,
+      totalOrders: 0,
+      totalSpent: 0,
+      activeCount: 0,
+      riskCount: 0,
+    });
+  }
+};
 
 const listSubscribers = async (req, res) => {
   const page = Math.max(Number(req.query.page) || 1, 1);
@@ -225,16 +296,20 @@ const getSubscriberById = async (req, res) => {
 
 const createSubscriber = async (req, res) => {
   try {
-    const subscriber = await Subscriber.create(normalizeSubscriberPayload(req.body));
+    const subscriber = await Subscriber.create(
+      normalizeSubscriberPayload(req.body),
+    );
     return res.status(201).json(subscriber);
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(409).json({ message: "Subscriber email already exists" });
+      return res
+        .status(409)
+        .json({ message: "Subscriber email already exists" });
     }
 
-    return res
-      .status(400)
-      .json({ message: getSubscriberErrorMessage(error, "Unable to create subscriber") });
+    return res.status(400).json({
+      message: getSubscriberErrorMessage(error, "Unable to create subscriber"),
+    });
   }
 };
 
@@ -246,7 +321,7 @@ const updateSubscriber = async (req, res) => {
       {
         returnDocument: "after",
         runValidators: true,
-      }
+      },
     );
 
     if (!subscriber) {
@@ -256,12 +331,14 @@ const updateSubscriber = async (req, res) => {
     return res.json(subscriber);
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(409).json({ message: "Subscriber email already exists" });
+      return res
+        .status(409)
+        .json({ message: "Subscriber email already exists" });
     }
 
-    return res
-      .status(400)
-      .json({ message: getSubscriberErrorMessage(error, "Unable to update subscriber") });
+    return res.status(400).json({
+      message: getSubscriberErrorMessage(error, "Unable to update subscriber"),
+    });
   }
 };
 
@@ -280,15 +357,20 @@ const bulkTagSubscribers = async (req, res) => {
   const tags = normalizeTags(req.body.tags);
 
   if (!subscriberIds.length || !tags.length) {
-    return res.status(400).json({ message: "Subscriber ids and tags are required" });
+    return res
+      .status(400)
+      .json({ message: "Subscriber ids and tags are required" });
   }
 
   await Subscriber.updateMany(
     { _id: { $in: subscriberIds } },
-    { $addToSet: { tags: { $each: tags } } }
+    { $addToSet: { tags: { $each: tags } } },
   );
 
-  return res.json({ message: "Tags assigned", updatedCount: subscriberIds.length });
+  return res.json({
+    message: "Tags assigned",
+    updatedCount: subscriberIds.length,
+  });
 };
 
 const bulkUnsubscribeSubscribers = async (req, res) => {
@@ -302,7 +384,7 @@ const bulkUnsubscribeSubscribers = async (req, res) => {
 
   await Subscriber.updateMany(
     { _id: { $in: subscriberIds } },
-    { status: "unsubscribed" }
+    { status: "unsubscribed" },
   );
 
   await Promise.all(
@@ -314,12 +396,15 @@ const bulkUnsubscribeSubscribers = async (req, res) => {
           reason: "unsubscribe",
           source: "admin",
         },
-        { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }
-      )
-    )
+        { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+      ),
+    ),
   );
 
-  return res.json({ message: "Subscribers unsubscribed", updatedCount: subscriberIds.length });
+  return res.json({
+    message: "Subscribers unsubscribed",
+    updatedCount: subscriberIds.length,
+  });
 };
 
 const bulkSuppressSubscribers = async (req, res) => {
@@ -333,7 +418,7 @@ const bulkSuppressSubscribers = async (req, res) => {
 
   await Subscriber.updateMany(
     { _id: { $in: subscriberIds } },
-    { status: "suppressed" }
+    { status: "suppressed" },
   );
 
   await Promise.all(
@@ -345,12 +430,40 @@ const bulkSuppressSubscribers = async (req, res) => {
           reason: "manual",
           source: "admin",
         },
-        { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }
-      )
-    )
+        { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+      ),
+    ),
   );
 
-  return res.json({ message: "Subscribers suppressed", updatedCount: subscriberIds.length });
+  return res.json({
+    message: "Subscribers suppressed",
+    updatedCount: subscriberIds.length,
+  });
+};
+
+const bulkReactivateSubscribers = async (req, res) => {
+  const subscriberIds = req.body.subscriberIds || [];
+
+  if (!subscriberIds.length) {
+    return res.status(400).json({ message: "Subscriber ids are required" });
+  }
+
+  const subscribers = await Subscriber.find({ _id: { $in: subscriberIds } });
+  const emails = subscribers.map((subscriber) => subscriber.email);
+
+  await Subscriber.updateMany(
+    { _id: { $in: subscriberIds } },
+    { status: "subscribed" },
+  );
+
+  if (emails.length) {
+    await SuppressionEntry.deleteMany({ email: { $in: emails } });
+  }
+
+  return res.json({
+    message: "Subscribers reactivated",
+    updatedCount: subscriberIds.length,
+  });
 };
 
 const importSubscribersFromCsv = async (req, res) => {
@@ -393,6 +506,7 @@ const importSubscribersFromCsv = async (req, res) => {
 
 export {
   bulkSuppressSubscribers,
+  bulkReactivateSubscribers,
   bulkTagSubscribers,
   bulkUnsubscribeSubscribers,
   createSubscriber,
@@ -400,6 +514,7 @@ export {
   filterSubscribers,
   getSubscriberById,
   getSubscriberMeta,
+  getSubscriberSummary,
   importSubscribersFromCsv,
   listSubscribers,
   updateSubscriber,

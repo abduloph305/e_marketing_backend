@@ -8,11 +8,44 @@ import EmailCampaign, {
 import EmailEvent from "../models/EmailEvent.js";
 import { buildCampaignDetailPayload, logCampaignActivity } from "../services/campaignService.js";
 import { dispatchCampaign } from "../services/campaignDispatchService.js";
+import { normalizeRecurrenceInterval, normalizeRecurrenceUnit } from "../utils/campaignRecurrence.js";
 
 const campaignPopulate = [
   { path: "templateId", select: "name subject previewText" },
   { path: "segmentId", select: "name" },
 ];
+
+const parseDateTimeInput = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return value;
+  }
+
+  const stringValue = String(value);
+  const localDateTimePattern = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/
+  const localMatch = stringValue.match(localDateTimePattern);
+
+  if (localMatch) {
+    const [, year, month, day, hours, minutes, seconds = "0", milliseconds = "0"] = localMatch;
+    const parsed = new Date(
+      Number(year),
+      Number(month) - 1,
+      Number(day),
+      Number(hours),
+      Number(minutes),
+      Number(seconds),
+      Number(milliseconds.padEnd(3, "0"))
+    );
+
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const parsed = new Date(stringValue);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
 
 const buildListMatch = (query) => {
   const match = {};
@@ -29,6 +62,12 @@ const buildListMatch = (query) => {
     match.goal = query.goal;
   }
 
+  if (query.recurring === 'true' || query.recurring === '1') {
+    match.isRecurring = true;
+  } else if (query.recurring === 'false' || query.recurring === '0') {
+    match.isRecurring = false;
+  }
+
   if (query.search?.trim()) {
     const pattern = new RegExp(
       query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
@@ -41,21 +80,31 @@ const buildListMatch = (query) => {
   return match;
 };
 
-const normalizeCampaignPayload = (payload) => ({
-  name: payload.name?.trim(),
-  type: payload.type,
-  goal: payload.goal || "clicks",
-  subject: payload.subject?.trim(),
-  previewText: payload.previewText?.trim() || "",
-  fromName: payload.fromName?.trim(),
-  fromEmail: payload.fromEmail?.trim().toLowerCase(),
-  replyTo: payload.replyTo?.trim().toLowerCase() || "",
-  templateId: payload.templateId || null,
-  segmentId: payload.segmentId || null,
-  status: payload.status || "draft",
-  scheduledAt: payload.scheduledAt || null,
-  sentAt: payload.sentAt || null,
-});
+const normalizeCampaignPayload = (payload) => {
+  const isRecurring = Boolean(payload.isRecurring);
+  const scheduledAt = parseDateTimeInput(payload.scheduledAt);
+  const status = isRecurring && scheduledAt ? "scheduled" : payload.status || "draft";
+
+  return {
+    name: payload.name?.trim(),
+    type: payload.type,
+    goal: payload.goal || "clicks",
+    subject: payload.subject?.trim(),
+    previewText: payload.previewText?.trim() || "",
+    fromName: payload.fromName?.trim(),
+    fromEmail: payload.fromEmail?.trim().toLowerCase(),
+    replyTo: payload.replyTo?.trim().toLowerCase() || "",
+    templateId: payload.templateId || null,
+    segmentId: payload.segmentId || null,
+    status,
+    scheduledAt,
+    isRecurring,
+    recurrenceInterval: normalizeRecurrenceInterval(payload.recurrenceInterval),
+    recurrenceUnit: normalizeRecurrenceUnit(payload.recurrenceUnit),
+    recurrenceMaxRuns: Number(payload.recurrenceMaxRuns || 0),
+    sentAt: payload.sentAt || null,
+  };
+};
 
 const buildDuplicateCampaignName = async (baseName) => {
   const escapedName = baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -223,9 +272,9 @@ const duplicateCampaign = async (req, res) => {
 
 const scheduleCampaign = async (req, res) => {
   const scheduledAtInput = req.body.scheduledAt || new Date();
-  const scheduledAt = new Date(scheduledAtInput);
+  const scheduledAt = parseDateTimeInput(scheduledAtInput);
 
-  if (Number.isNaN(scheduledAt.getTime())) {
+  if (!scheduledAt) {
     return res.status(400).json({ message: "Invalid scheduled time" });
   }
 

@@ -16,14 +16,34 @@ const getPreviewCount = async (rules = []) => {
 const getSegmentMeta = async (_req, res) =>
   res.json({
     suggestedRules: [
-      { field: "purchasedInLastDays", operator: "gte", label: "Purchased in last X days" },
-      { field: "cartAbandoners", operator: "eq", label: "Cart abandoners placeholder" },
+      {
+        field: "purchasedInLastDays",
+        operator: "gte",
+        label: "Purchased in last X days",
+      },
+      {
+        field: "cartAbandoners",
+        operator: "eq",
+        label: "Cart abandoners placeholder",
+      },
       { field: "inactiveUsers", operator: "gte", label: "Inactive users" },
       { field: "firstTimeBuyers", operator: "eq", label: "First-time buyers" },
       { field: "repeatBuyers", operator: "gte", label: "Repeat buyers" },
-      { field: "highValueCustomers", operator: "gte", label: "High value customers" },
-      { field: "openedButDidNotClick", operator: "eq", label: "Opened but did not click" },
-      { field: "clickedButDidNotPurchase", operator: "eq", label: "Clicked but did not purchase placeholder" },
+      {
+        field: "highValueCustomers",
+        operator: "gte",
+        label: "High value customers",
+      },
+      {
+        field: "openedButDidNotClick",
+        operator: "eq",
+        label: "Opened but did not click",
+      },
+      {
+        field: "clickedButDidNotPurchase",
+        operator: "eq",
+        label: "Clicked but did not purchase placeholder",
+      },
     ],
   });
 
@@ -33,7 +53,7 @@ const listSegments = async (_req, res) => {
     segments.map(async (segment) => ({
       ...segment,
       previewCount: await getPreviewCount(segment.rules),
-    }))
+    })),
   );
 
   return res.json(items);
@@ -85,7 +105,7 @@ const updateSegment = async (req, res) => {
       {
         returnDocument: "after",
         runValidators: true,
-      }
+      },
     );
 
     if (!segment) {
@@ -116,8 +136,25 @@ const deleteSegment = async (req, res) => {
 };
 
 const previewSegment = async (req, res) => {
-  const previewCount = await getPreviewCount((req.body.rules || []).map(normalizeRule));
-  return res.json({ previewCount });
+  try {
+    const rules = (req.body.rules || []).map(normalizeRule);
+    const match = buildSubscriberMatch({ rules });
+
+    const [previewCount, sampleSubscribers] = await Promise.all([
+      Subscriber.countDocuments(match),
+      Subscriber.find(match)
+        .sort({ engagementScore: -1, updatedAt: -1 })
+        .limit(5)
+        .select(
+          "firstName lastName email status source engagementScore totalOrders totalSpent",
+        )
+        .lean(),
+    ]);
+
+    return res.json({ previewCount, sampleSubscribers });
+  } catch (_error) {
+    return res.json({ previewCount: 0, sampleSubscribers: [] });
+  }
 };
 
 export {

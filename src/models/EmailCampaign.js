@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 export const campaignTypes = [
   "promotional",
+  "broadcast",
   "newsletter",
   "abandoned_cart",
   "win_back",
@@ -34,7 +35,7 @@ const totalsSchema = new mongoose.Schema(
     conversions: { type: Number, default: 0, min: 0 },
     revenue: { type: Number, default: 0, min: 0 },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const emailCampaignSchema = new mongoose.Schema(
@@ -100,6 +101,34 @@ const emailCampaignSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    isRecurring: {
+      type: Boolean,
+      default: false,
+    },
+    recurrenceInterval: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+    recurrenceUnit: {
+      type: String,
+      enum: ["day", "week", "month"],
+      default: "week",
+    },
+    recurrenceMaxRuns: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    recurrenceRunCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+    recurrenceLastRunAt: {
+      type: Date,
+      default: null,
+    },
     sentAt: {
       type: Date,
       default: null,
@@ -116,7 +145,7 @@ const emailCampaignSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 emailCampaignSchema.virtual("totalSent").get(function totalSent() {

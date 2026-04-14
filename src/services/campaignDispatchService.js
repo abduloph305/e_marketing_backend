@@ -7,6 +7,7 @@ import {
   logCampaignActivity,
   updateCampaignCounters,
 } from "./campaignService.js";
+import { buildNextRecurringRun } from "../utils/campaignRecurrence.js";
 import { sendCampaign as sendCampaignThroughSes } from "./sesService.js";
 import { storeEmailEvent } from "./emailEventService.js";
 import { buildSubscriberMatch } from "../utils/subscriberFilters.js";
@@ -118,7 +119,7 @@ const dispatchCampaign = async (campaignId, { mode = "manual" } = {}) => {
     });
   }
 
-  const updatedCampaign = await EmailCampaign.findByIdAndUpdate(
+  let updatedCampaign = await EmailCampaign.findByIdAndUpdate(
     campaign._id,
     {
       status: "sent",
@@ -134,6 +135,31 @@ const dispatchCampaign = async (campaignId, { mode = "manual" } = {}) => {
     sentCount: recipients.length,
     mode,
   });
+
+  if (campaign.isRecurring) {
+    const nextRunAt = buildNextRecurringRun(campaign);
+    const nextRunCount = Number(campaign.recurrenceRunCount || 0) + 1;
+
+    await EmailCampaign.findByIdAndUpdate(campaign._id, {
+      recurrenceRunCount: nextRunCount,
+      recurrenceLastRunAt: new Date(),
+    });
+
+    if (nextRunAt) {
+      await EmailCampaign.findByIdAndUpdate(campaign._id, {
+        status: "scheduled",
+        scheduledAt: nextRunAt,
+      });
+
+      await logCampaignActivity(campaign._id, "rescheduled", "Recurring campaign rescheduled", {
+        nextRunAt,
+      });
+
+      updatedCampaign = await EmailCampaign.findById(campaign._id)
+        .populate({ path: "templateId", select: "name subject previewText" })
+        .populate({ path: "segmentId", select: "name" });
+    }
+  }
 
   return {
     campaign: updatedCampaign,
