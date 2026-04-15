@@ -165,8 +165,86 @@ const sendCampaign = async ({ campaign, recipient, tracking = null }) =>
     })
   );
 
+const buildAutomationEmailPayload = ({
+  template,
+  recipient,
+  subject,
+  previewText = "",
+  fromName = env.automationFromName || "Automation Team",
+  fromEmail = env.automationFromEmail || env.adminEmail,
+  replyTo = env.adminEmail || "",
+  tracking = null,
+}) => {
+  if (!fromEmail) {
+    throw new Error("Automation sender email is missing");
+  }
+
+  const content = template.htmlContent
+    ? renderTemplate(template.htmlContent, recipient)
+    : "";
+
+  const htmlContent = injectTrackingPixel(
+    rewriteTrackedLinks(
+      previewText ? `<!-- ${escapeHtml(previewText)} -->\n${content}` : content,
+      tracking?.clickTrackingUrl || ""
+    ),
+    tracking?.trackingPixelUrl || ""
+  );
+
+  return {
+    FromEmailAddress: `${fromName} <${fromEmail}>`,
+    Destination: {
+      ToAddresses: [recipient.email],
+    },
+    ReplyToAddresses: replyTo ? [replyTo] : undefined,
+    Content: {
+      Simple: {
+        Subject: {
+          Data: subject || template.subject || "Automation email",
+        },
+        Body: {
+          Html: {
+            Data: htmlContent,
+          },
+          Text: {
+            Data: previewText
+              ? `${previewText}\n\n${subject || template.subject || "Automation email"}`
+              : subject || template.subject || "Automation email",
+          },
+        },
+      },
+    },
+    EmailTags: [
+      { Name: "mode", Value: "automation" },
+      { Name: "recipientEmail", Value: recipient.email },
+      ...(recipient.subscriberId
+        ? [{ Name: "subscriberId", Value: String(recipient.subscriberId) }]
+        : []),
+    ],
+    ConfigurationSetName: env.sesConfigurationSet || undefined,
+  };
+};
+
+const sendAutomationEmail = async ({
+  template,
+  recipient,
+  subject,
+  previewText = "",
+  tracking = null,
+}) =>
+  sendEmailCommand(
+    buildAutomationEmailPayload({
+      template,
+      recipient,
+      subject,
+      previewText,
+      tracking,
+    })
+  );
+
 export {
   buildPersonalizedEmailPayload,
   sendCampaign,
   sendTestEmail,
+  sendAutomationEmail,
 };

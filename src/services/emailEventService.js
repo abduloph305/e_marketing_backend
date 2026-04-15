@@ -36,6 +36,51 @@ const resolveSuppressionReason = (eventType) => {
   return "manual";
 };
 
+const recalculateEngagementScore = (subscriber = {}) =>
+  Math.round(
+    Number(subscriber.totalOrders || 0) * 18 +
+      Number(subscriber.totalSpent || 0) * 0.08 +
+      (subscriber.lastOpenAt ? 8 : 0) +
+      (subscriber.lastClickAt ? 16 : 0)
+  );
+
+const updateSubscriberActivity = async (recipientEmail, eventType, timestamp) => {
+  const subscriber = await Subscriber.findOne({ email: recipientEmail }).lean();
+
+  if (!subscriber) {
+    return;
+  }
+
+  const nextState = {
+    lastActivityAt: timestamp,
+  };
+
+  if (eventType === "send" || eventType === "delivery") {
+    nextState.lastEmailSentAt = timestamp;
+  }
+
+  if (eventType === "open") {
+    nextState.lastOpenAt = timestamp;
+  }
+
+  if (eventType === "click") {
+    nextState.lastClickAt = timestamp;
+  }
+
+  if (["send", "delivery", "open", "click"].includes(eventType)) {
+    const merged = {
+      ...subscriber,
+      ...nextState,
+    };
+
+    nextState.engagementScore = recalculateEngagementScore(merged);
+  }
+
+  await Subscriber.findByIdAndUpdate(subscriber._id, {
+    $set: nextState,
+  });
+};
+
 const storeEmailEvent = async ({
   campaignId = null,
   subscriberId = null,
@@ -100,6 +145,10 @@ const storeEmailEvent = async ({
         { status: subscriberStatus },
         { returnDocument: "after" }
       );
+    }
+
+    if (["send", "delivery", "open", "click"].includes(eventType)) {
+      await updateSubscriberActivity(recipientEmail, eventType, timestamp);
     }
 
     if (shouldCreateSuppression({ eventType, bounceType })) {

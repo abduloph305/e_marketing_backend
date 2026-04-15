@@ -9,6 +9,7 @@ import {
   getWorkflowById,
   getWorkflowExecutions,
   listWorkflows,
+  triggerWorkflows,
   updateWorkflow,
 } from "../controllers/automationController.js";
 import { protectAdmin } from "../middleware/authMiddleware.js";
@@ -25,6 +26,7 @@ router.post("/", createWorkflow);
 router.post("/:id/activate", activateWorkflow);
 router.post("/:id/deactivate", deactivateWorkflow);
 router.post("/:id/sample-execution", createSampleExecution);
+router.post("/trigger", triggerWorkflows);
 router.put("/:id", updateWorkflow);
 router.delete("/:id", deleteWorkflow);
 

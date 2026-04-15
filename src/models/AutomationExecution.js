@@ -35,8 +35,22 @@ const automationExecutionSchema = new mongoose.Schema(
     },
     currentStepOrder: {
       type: Number,
-      default: 0,
-      min: 0,
+      default: -1,
+      min: -1,
+    },
+    scheduledFor: {
+      type: Date,
+      default: null,
+      index: true,
+    },
+    pausedAt: {
+      type: Date,
+      default: null,
+    },
+    lastError: {
+      type: String,
+      default: "",
+      trim: true,
     },
     context: {
       type: mongoose.Schema.Types.Mixed,

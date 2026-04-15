@@ -5,6 +5,7 @@ import Subscriber, {
   subscriberStatuses,
 } from "../models/Subscriber.js";
 import SuppressionEntry from "../models/SuppressionEntry.js";
+import { triggerWorkflowExecutions } from "../services/automationService.js";
 import { buildSubscriberMatch } from "../utils/subscriberFilters.js";
 
 const normalizeTags = (tags = []) =>
@@ -299,6 +300,17 @@ const createSubscriber = async (req, res) => {
     const subscriber = await Subscriber.create(
       normalizeSubscriberPayload(req.body),
     );
+
+    triggerWorkflowExecutions({
+      trigger: "welcome_signup",
+      subscriberId: subscriber._id,
+      context: {
+        source: "subscriber.created",
+      },
+    }).catch((error) => {
+      console.error("Unable to trigger welcome_signup automation", error);
+    });
+
     return res.status(201).json(subscriber);
   } catch (error) {
     if (error.code === 11000) {

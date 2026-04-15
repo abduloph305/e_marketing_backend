@@ -9,6 +9,7 @@ import AutomationWorkflow, {
   automationTriggers,
   automationWorkflowStatuses,
 } from "../models/AutomationWorkflow.js";
+import { env } from "../config/env.js";
 import {
   buildWorkflowDetailPayload,
   buildWorkflowSummary,
@@ -17,6 +18,7 @@ import {
   normalizeSteps,
   normalizeWorkflowPayload,
   processWorkflowExecution,
+  triggerWorkflowExecutions,
   registerEcommerceAutomationHooks,
   replaceWorkflowSteps,
 } from "../services/automationService.js";
@@ -236,18 +238,47 @@ const createSampleExecution = async (req, res) => {
     return res.status(404).json({ message: "Workflow not found" });
   }
 
-  const execution = await createWorkflowExecution({
-    workflowId: workflow._id,
-    trigger: workflow.trigger,
-    context: {
-      source: "manual_preview",
-      notes: "Created from the dashboard to validate workflow structure.",
-    },
-  });
+  try {
+    const execution = await createWorkflowExecution({
+      workflowId: workflow._id,
+      trigger: workflow.trigger,
+      context: {
+        source: "manual_preview",
+        notes: "Created from the dashboard to validate workflow structure.",
+        previewRecipientEmail: env.adminEmail || "preview@example.com",
+      },
+    });
 
-  await processWorkflowExecution(execution._id);
+    await processWorkflowExecution(execution._id);
 
-  return res.json({ message: "Sample execution processed" });
+    return res.json({ message: "Sample execution processed" });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || "Unable to process sample execution" });
+  }
+};
+
+const triggerWorkflows = async (req, res) => {
+  const trigger = req.body.trigger?.trim();
+
+  if (!trigger) {
+    return res.status(400).json({ message: "Trigger is required" });
+  }
+
+  try {
+    const results = await triggerWorkflowExecutions({
+      trigger,
+      subscriberId: req.body.subscriberId || null,
+      context: req.body.context || {},
+    });
+
+    return res.json({
+      message: "Workflow trigger processed",
+      results,
+      matchedCount: results.length,
+    });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || "Unable to trigger workflows" });
+  }
 };
 
 const deleteWorkflow = async (req, res) => {
@@ -277,4 +308,5 @@ export {
   getWorkflowExecutions,
   createSampleExecution,
   deleteWorkflow,
+  triggerWorkflows,
 };

@@ -15,6 +15,8 @@ const env = {
   adminEmail: process.env.ADMIN_EMAIL || "",
   adminPassword: process.env.ADMIN_PASSWORD || "",
   adminRole: process.env.ADMIN_ROLE || "super_admin",
+  automationFromName: process.env.AUTOMATION_FROM_NAME || "Automation Team",
+  automationFromEmail: process.env.AUTOMATION_FROM_EMAIL || process.env.ADMIN_EMAIL || "",
   nodeEnv: process.env.NODE_ENV || "development",
   sesRegion: process.env.AWS_SES_REGION || "",
   sesAccessKeyId: process.env.AWS_SES_ACCESS_KEY_ID || "",
