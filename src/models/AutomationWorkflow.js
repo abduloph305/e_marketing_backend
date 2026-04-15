@@ -2,6 +2,10 @@ import mongoose from "mongoose";
 
 export const automationTriggers = [
   "welcome_signup",
+  "order_confirmation",
+  "payment_success",
+  "shipping_update",
+  "delivery_confirmation",
   "abandoned_cart",
   "browse_abandonment",
   "order_followup",

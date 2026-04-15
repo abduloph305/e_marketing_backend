@@ -15,14 +15,32 @@ const env = {
   adminEmail: process.env.ADMIN_EMAIL || "",
   adminPassword: process.env.ADMIN_PASSWORD || "",
   adminRole: process.env.ADMIN_ROLE || "super_admin",
-  automationFromName: process.env.AUTOMATION_FROM_NAME || "Automation Team",
-  automationFromEmail: process.env.AUTOMATION_FROM_EMAIL || process.env.ADMIN_EMAIL || "",
+  automationFromName: process.env.AUTOMATION_FROM_NAME || process.env.MAIL_FROM_NAME || "SellersLogin",
+  automationFromEmail:
+    process.env.AUTOMATION_FROM_EMAIL ||
+    process.env.MAIL_FROM_ADDRESS ||
+    process.env.EMAIL ||
+    process.env.ADMIN_EMAIL ||
+    "",
   nodeEnv: process.env.NODE_ENV || "development",
   sesRegion: process.env.AWS_SES_REGION || "",
   sesAccessKeyId: process.env.AWS_SES_ACCESS_KEY_ID || "",
   sesSecretAccessKey: process.env.AWS_SES_SECRET_ACCESS_KEY || "",
   sesConfigurationSet: process.env.AWS_SES_CONFIGURATION_SET || "",
   sesWebhookSecret: process.env.SES_WEBHOOK_SECRET || "",
+  ophmateWebhookSecret: process.env.OPHMATE_WEBHOOK_SECRET || "",
+  ophmateInternalApiUrl:
+    process.env.OPHMATE_INTERNAL_API_URL ||
+    process.env.INTERNAL_API_URL ||
+    "",
+  ophmateInternalEmail:
+    process.env.OPHMATE_INTERNAL_EMAIL ||
+    process.env.SUPERADMIN_EMAIL ||
+    "",
+  ophmateInternalPassword:
+    process.env.OPHMATE_INTERNAL_PASSWORD ||
+    process.env.SUPERADMIN_PASSWORD ||
+    "",
   publicAppUrl:
     process.env.PUBLIC_APP_URL ||
     process.env.APP_URL ||
@@ -39,3 +57,5 @@ requiredKeys.forEach((key) => {
 });
 
 export { env };
+
+

@@ -170,7 +170,7 @@ const buildAutomationEmailPayload = ({
   recipient,
   subject,
   previewText = "",
-  fromName = env.automationFromName || "Automation Team",
+  fromName = env.automationFromName || "SellersLogin",
   fromEmail = env.automationFromEmail || env.adminEmail,
   replyTo = env.adminEmail || "",
   tracking = null,

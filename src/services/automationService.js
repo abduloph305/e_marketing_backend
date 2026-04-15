@@ -500,7 +500,8 @@ const processWorkflowExecution = async (executionId) => {
     (execution.context?.source === "manual_preview" ? buildPreviewSubscriber(execution.context) : null);
 
   const steps = await AutomationStep.find({ workflowId: execution.workflowId }).sort({ order: 1 });
-  const startIndex = Math.max((Number(execution.currentStepOrder) || -1) + 1, 0);
+  const currentStepOrder = Number(execution.currentStepOrder);
+  const startIndex = Math.max(Number.isFinite(currentStepOrder) ? currentStepOrder + 1 : 0, 0);
 
   try {
     for (let index = startIndex; index < steps.length; index += 1) {
@@ -761,12 +762,19 @@ const triggerWorkflowExecutions = async ({
 
 const registerEcommerceAutomationHooks = () => ({
   supportedTriggers: [
+    "welcome_signup",
+    "order_confirmation",
+    "payment_success",
+    "shipping_update",
+    "delivery_confirmation",
     "abandoned_cart",
     "browse_abandonment",
     "order_followup",
     "review_request",
+    "win_back",
     "price_drop",
     "back_in_stock",
+    "inactive_subscriber",
   ],
   state: "future_ready",
   message:

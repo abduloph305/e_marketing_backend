@@ -6,6 +6,7 @@ import Subscriber, {
 } from "../models/Subscriber.js";
 import SuppressionEntry from "../models/SuppressionEntry.js";
 import { triggerWorkflowExecutions } from "../services/automationService.js";
+import { cleanupDeletedWebsiteSubscribers } from "../services/ophmateSyncService.js";
 import { buildSubscriberMatch } from "../utils/subscriberFilters.js";
 
 const normalizeTags = (tags = []) =>
@@ -33,6 +34,41 @@ const normalizeCustomFields = (customFields = {}) => {
   return customFields;
 };
 
+const titleCase = (value = "") =>
+  String(value)
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+
+const deriveNamesFromEmail = (email = "") => {
+  const localPart = String(email).split("@")[0] || "subscriber";
+  const nameParts = localPart
+    .split(/[._-]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (!nameParts.length) {
+    return {
+      firstName: "Subscriber",
+      lastName: "Imported",
+    };
+  }
+
+  if (nameParts.length === 1) {
+    return {
+      firstName: titleCase(nameParts[0]),
+      lastName: "Subscriber",
+    };
+  }
+
+  return {
+    firstName: titleCase(nameParts[0]),
+    lastName: titleCase(nameParts.slice(1).join(" ")) || "Subscriber",
+  };
+};
+
 const calculateEngagementSummary = (payload) => {
   const lastActivityAt =
     payload.lastClickAt ||
@@ -54,10 +90,12 @@ const calculateEngagementSummary = (payload) => {
 };
 
 const normalizeSubscriberPayload = (payload) => {
+  const email = payload.email?.trim().toLowerCase();
+  const derivedNames = email ? deriveNamesFromEmail(email) : {};
   const normalized = {
-    firstName: payload.firstName?.trim(),
-    lastName: payload.lastName?.trim(),
-    email: payload.email?.trim().toLowerCase(),
+    firstName: payload.firstName?.trim() || derivedNames.firstName || "",
+    lastName: payload.lastName?.trim() || derivedNames.lastName || "",
+    email,
     phone: payload.phone?.trim() || "",
     status: payload.status,
     source: payload.source || "manual",
@@ -110,10 +148,24 @@ const parseCsv = (content = "") => {
     .filter(Boolean);
 
   if (lines.length < 2) {
-    return [];
+    const singleColumnEmails = lines.filter((line) => line.includes("@"));
+
+    return singleColumnEmails.map((email) => ({ email }));
   }
 
   const headers = lines[0].split(",").map((value) => value.trim());
+  const isEmailOnlyHeader =
+    headers.length === 1 && headers[0].toLowerCase() === "email";
+  const isSingleColumnEmailList =
+    headers.length === 1 && lines[0].includes("@") && lines.length >= 1;
+
+  if (isSingleColumnEmailList) {
+    return lines.map((line) => ({ email: line }));
+  }
+
+  if (isEmailOnlyHeader) {
+    return lines.slice(1).map((line) => ({ email: line.split(",")[0]?.trim() || "" }));
+  }
 
   return lines.slice(1).map((line) => {
     const values = line.split(",").map((value) => value.trim());
@@ -163,6 +215,14 @@ const buildDetailPayload = async (subscriber) => {
   };
 };
 
+const runBestEffortCleanup = async () => {
+  try {
+    await cleanupDeletedWebsiteSubscribers();
+  } catch (error) {
+    console.warn("OphMate cleanup skipped", error?.message || error);
+  }
+};
+
 const getSubscriberMeta = async (_req, res) =>
   res.json({
     statuses: subscriberStatuses,
@@ -171,6 +231,8 @@ const getSubscriberMeta = async (_req, res) =>
 
 const getSubscriberSummary = async (_req, res) => {
   try {
+    await runBestEffortCleanup();
+
     const [statusCounts, sourceCounts, totals] = await Promise.all([
       Subscriber.aggregate([
         { $group: { _id: "$status", count: { $sum: 1 } } },
@@ -238,6 +300,8 @@ const getSubscriberSummary = async (_req, res) => {
 };
 
 const listSubscribers = async (req, res) => {
+  await runBestEffortCleanup();
+
   const page = Math.max(Number(req.query.page) || 1, 1);
   const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
   const match = buildSubscriberMatch(req.query);
@@ -494,6 +558,10 @@ const importSubscribersFromCsv = async (req, res) => {
       source: row.source || "admin_import",
       tags: row.tags || "",
     });
+
+    if (!payload.email) {
+      continue;
+    }
 
     const existing = await Subscriber.findOne({ email: payload.email });
 

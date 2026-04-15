@@ -7,6 +7,7 @@ import campaignRoutes from "./routes/campaignRoutes.js";
 import emailRoutes from "./routes/emailRoutes.js";
 import eventRoutes from "./routes/eventRoutes.js";
 import reportRoutes from "./routes/reportRoutes.js";
+import integrationRoutes from "./routes/integrationRoutes.js";
 import subscriberRoutes from "./routes/subscriberRoutes.js";
 import segmentRoutes from "./routes/segmentRoutes.js";
 import templateRoutes from "./routes/templateRoutes.js";
@@ -45,6 +46,7 @@ app.use("/api/automations", automationRoutes);
 app.use("/api/email", emailRoutes);
 app.use("/api/events", eventRoutes);
 app.use("/api/reports", reportRoutes);
+app.use("/api/integrations", integrationRoutes);
 app.use("/api/templates", templateRoutes);
 app.use("/api/campaigns", campaignRoutes);
 app.use("/api/subscribers", subscriberRoutes);
@@ -60,3 +62,4 @@ app.use((error, _req, res, _next) => {
 });
 
 export default app;
+
