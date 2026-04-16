@@ -140,27 +140,40 @@ const saveTeamUser = async (req, res) => {
 
   const nextPasswordHash = await bcrypt.hash(password, 10);
 
-  const user = await Admin.findOneAndUpdate(
-    { email: normalizedEmail },
-    {
-      $set: {
-        name: normalizedName,
-        email: normalizedEmail,
-        role: role === "super_admin" ? "team_member" : role,
-        permissions: selectedPermissions,
-        accountStatus,
-        invitedAt: existing?.invitedAt || new Date(),
-        lastLoginAt: existing?.lastLoginAt || null,
-        password: nextPasswordHash,
+  let user;
+
+  if (existing) {
+    user = await Admin.findByIdAndUpdate(
+      existing._id,
+      {
+        $set: {
+          name: normalizedName,
+          email: normalizedEmail,
+          role: role === "super_admin" ? "team_member" : role,
+          permissions: selectedPermissions,
+          accountStatus,
+          invitedAt: existing.invitedAt || new Date(),
+          lastLoginAt: existing.lastLoginAt || null,
+          password: nextPasswordHash,
+        },
       },
-    },
-    {
-      upsert: true,
-      new: true,
-      runValidators: true,
-      setDefaultsOnInsert: true,
-    },
-  );
+      {
+        new: true,
+        runValidators: true,
+      },
+    );
+  } else {
+    user = await Admin.create({
+      name: normalizedName,
+      email: normalizedEmail,
+      password: nextPasswordHash,
+      role: role === "super_admin" ? "team_member" : role,
+      permissions: selectedPermissions,
+      accountStatus,
+      invitedAt: new Date(),
+      lastLoginAt: null,
+    });
+  }
 
   let emailStatus = "sent";
   try {
