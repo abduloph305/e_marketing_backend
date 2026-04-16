@@ -29,11 +29,28 @@ const loginAdmin = async (req, res) => {
     return res.status(401).json({ message: "Invalid credentials" });
   }
 
+  if (admin.accountStatus === "inactive") {
+    return res.status(403).json({ message: "Your account has been deactivated" });
+  }
+
+  if (!admin.password) {
+    return res.status(401).json({ message: "Invalid credentials" });
+  }
+
   const isValidPassword = await admin.comparePassword(password);
 
   if (!isValidPassword) {
     return res.status(401).json({ message: "Invalid credentials" });
   }
+
+  await Admin.updateOne(
+    { _id: admin._id },
+    {
+      $set: {
+        lastLoginAt: new Date(),
+      },
+    },
+  );
 
   const token = buildToken(admin.id);
   setAuthCookie(res, token);

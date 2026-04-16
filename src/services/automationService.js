@@ -262,6 +262,8 @@ const buildAutomationRecipient = (subscriber) => ({
   firstName: subscriber.firstName,
   lastName: subscriber.lastName,
   subscriberId: subscriber._id,
+  customFields: subscriber.customFields || {},
+  fullName: [subscriber.firstName, subscriber.lastName].filter(Boolean).join(" ").trim(),
 });
 
 const buildPreviewSubscriber = (context = {}) => ({
@@ -760,9 +762,38 @@ const triggerWorkflowExecutions = async ({
   return results;
 };
 
+const triggerWorkflowExecutionsForTriggers = async ({
+  triggers = [],
+  subscriberId = null,
+  context = {},
+}) => {
+  const uniqueTriggers = Array.from(
+    new Set(
+      (Array.isArray(triggers) ? triggers : [triggers])
+        .map((entry) => String(entry || "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+  const results = [];
+
+  for (const trigger of uniqueTriggers) {
+    const workflowResults = await triggerWorkflowExecutions({
+      trigger,
+      subscriberId,
+      context,
+    });
+
+    results.push(...workflowResults);
+  }
+
+  return results;
+};
+
 const registerEcommerceAutomationHooks = () => ({
   supportedTriggers: [
     "welcome_signup",
+    "welcome_series",
     "order_confirmation",
     "payment_success",
     "shipping_update",
@@ -775,10 +806,12 @@ const registerEcommerceAutomationHooks = () => ({
     "price_drop",
     "back_in_stock",
     "inactive_subscriber",
+    "reminder_email",
+    "discount_offer",
   ],
   state: "future_ready",
-  message:
-    "These hooks are scaffolded for future ecommerce event ingestion without coupling this dashboard to a store yet.",
+  // message:
+  //   "These hooks are scaffolded for future ecommerce event ingestion without coupling this dashboard to a store yet.",
 });
 
 export {
@@ -792,5 +825,6 @@ export {
   processWorkflowExecution,
   processDueAutomationExecutions,
   triggerWorkflowExecutions,
+  triggerWorkflowExecutionsForTriggers,
   registerEcommerceAutomationHooks,
 };

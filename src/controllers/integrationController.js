@@ -1,22 +1,36 @@
 import IntegrationEvent from "../models/IntegrationEvent.js";
 import Subscriber from "../models/Subscriber.js";
 import { env } from "../config/env.js";
-import { triggerWorkflowExecutions } from "../services/automationService.js";
+import { triggerWorkflowExecutionsForTriggers } from "../services/automationService.js";
 
 const eventTriggerMap = {
-  "user.registered": "welcome_signup",
-  "order.created": "order_confirmation",
+  "user.registered": ["welcome_signup", "welcome_series"],
+  "order.created": ["order_confirmation", "order_followup"],
+  "order.completed": ["order_confirmation", "order_followup"],
   "payment.success": "payment_success",
   "shipping.updated": "shipping_update",
   "delivery.confirmed": "delivery_confirmation",
+  "cart.abandoned": "abandoned_cart",
+  "cart.created": "browse_abandonment",
+  "lead.followup": "order_followup",
+  "lead.reminder": "reminder_email",
+  "reminder.due": "reminder_email",
+  "discount.eligible": "discount_offer",
 };
 
 const eventSourceMap = {
   "user.registered": "website_signup",
   "order.created": "checkout",
+  "order.completed": "checkout",
   "payment.success": "checkout",
   "shipping.updated": "checkout",
   "delivery.confirmed": "checkout",
+  "cart.abandoned": "checkout",
+  "cart.created": "checkout",
+  "lead.followup": "crm",
+  "lead.reminder": "crm",
+  "reminder.due": "crm",
+  "discount.eligible": "crm",
 };
 
 const titleCase = (value = "") =>
@@ -78,6 +92,74 @@ const normalizeTags = (tags = []) =>
 
 const normalizeEmail = (value = "") => String(value).trim().toLowerCase();
 
+const normalizeItem = (item = {}) => ({
+  productId: String(item.productId || item.product_id || "").trim(),
+  variantId: String(item.variantId || item.variant_id || "").trim(),
+  name: String(item.name || item.product_name || "").trim(),
+  quantity: Number(item.quantity || 0),
+  unitPrice: Number(item.unitPrice || item.unit_price || 0),
+  totalPrice: Number(item.totalPrice || item.total_price || 0),
+  imageUrl: String(item.imageUrl || item.image_url || "").trim(),
+  attributes:
+    item.attributes && typeof item.attributes === "object"
+      ? item.attributes
+      : item.variant_attributes && typeof item.variant_attributes === "object"
+        ? item.variant_attributes
+        : {},
+  vendorId: String(item.vendorId || item.vendor_id || "").trim(),
+  categoryId: String(item.categoryId || item.category_id || "").trim(),
+});
+
+const normalizeShippingAddress = (address = {}) => ({
+  label: String(address.label || "Home").trim(),
+  fullName: String(address.fullName || address.full_name || "").trim(),
+  phone: String(address.phone || "").trim(),
+  line1: String(address.line1 || "").trim(),
+  line2: String(address.line2 || "").trim(),
+  city: String(address.city || "").trim(),
+  state: String(address.state || "").trim(),
+  pincode: String(address.pincode || "").trim(),
+  country: String(address.country || "India").trim(),
+});
+
+const formatItemsSummary = (items = []) =>
+  (Array.isArray(items) ? items : [])
+    .map((item) => {
+      const normalized = normalizeItem(item);
+      return [normalized.name, normalized.quantity ? `x${normalized.quantity}` : ""]
+        .filter(Boolean)
+        .join(" ");
+    })
+    .filter(Boolean)
+    .join(", ");
+
+const formatShippingAddressText = (address = {}) => {
+  const normalized = normalizeShippingAddress(address);
+  return [
+    normalized.fullName,
+    normalized.phone,
+    normalized.line1,
+    normalized.line2,
+    [normalized.city, normalized.state, normalized.pincode].filter(Boolean).join(", "),
+    normalized.country,
+  ]
+    .filter(Boolean)
+    .join(" | ");
+};
+
+const toDateParts = (value) => {
+  const date = value ? new Date(value) : new Date();
+
+  if (Number.isNaN(date.getTime())) {
+    return { orderDate: "", orderTime: "" };
+  }
+
+  return {
+    orderDate: date.toLocaleDateString(),
+    orderTime: date.toLocaleTimeString(),
+  };
+};
+
 const getConfiguredWebhookSecrets = () =>
   Array.from(
     new Set(
@@ -105,6 +187,9 @@ const isLocalWebhookRequest = (req) => {
 const resolveSubscriberPayload = (payload = {}) => {
   const email = normalizeEmail(payload.email || payload.recipientEmail || "");
   const { firstName, lastName } = normalizeNameParts(payload, email);
+  const items = Array.isArray(payload.items) ? payload.items.map(normalizeItem) : [];
+  const shippingAddress = payload.shippingAddress ? normalizeShippingAddress(payload.shippingAddress) : null;
+  const { orderDate, orderTime } = toDateParts(payload.orderPlacedAt || payload.timestamp || new Date().toISOString());
 
   return {
     email,
@@ -122,8 +207,18 @@ const resolveSubscriberPayload = (payload = {}) => {
       ophmateOrderStatus: payload.orderStatus || "",
       ophmatePaymentStatus: payload.paymentStatus || "",
       ophmateDeliveryProvider: payload.deliveryProvider || "",
+      ophmatePaymentMethod: payload.paymentMethod || "",
       ophmateEventType: payload.eventType || "",
       ophmateEventTimestamp: payload.timestamp || new Date().toISOString(),
+      ophmateItems: items,
+      ophmateItemsSummary: payload.orderSummary || formatItemsSummary(items),
+      ophmateShippingAddress: shippingAddress,
+      ophmateShippingAddressText: payload.metadata?.shippingAddressText || formatShippingAddressText(shippingAddress || {}),
+      ophmateOrderPlacedAt: payload.orderPlacedAt || payload.timestamp || new Date().toISOString(),
+      ophmateOrderDate: payload.metadata?.orderDate || orderDate,
+      ophmateOrderTime: payload.metadata?.orderTime || orderTime,
+      ophmateCartItems: items,
+      ophmateCartItemsSummary: payload.orderSummary || formatItemsSummary(items),
     },
     source: eventSourceMap[payload.eventType] || payload.source || "manual",
     tags: normalizeTags([
@@ -131,9 +226,14 @@ const resolveSubscriberPayload = (payload = {}) => {
       payload.tag || "",
       payload.eventType === "user.registered" ? "new_user" : "",
       payload.eventType === "order.created" ? "order_created" : "",
+      payload.eventType === "order.completed" ? "order_completed" : "",
       payload.eventType === "payment.success" ? "payment_success" : "",
       payload.eventType === "shipping.updated" ? "shipping_update" : "",
       payload.eventType === "delivery.confirmed" ? "delivery_confirmed" : "",
+      payload.eventType === "cart.abandoned" ? "cart_abandoned" : "",
+      payload.eventType === "cart.created" ? "cart_started" : "",
+      payload.eventType === "reminder.due" ? "needs_reminder" : "",
+      payload.eventType === "discount.eligible" ? "discount_offer" : "",
     ]),
     totalOrders: Number(payload.totalOrders || 0),
     totalSpent: Number(payload.totalSpent || 0),
@@ -220,12 +320,47 @@ const upsertSubscriberFromEvent = async (payload) => {
     update.customFields.ophmateOrderId = payload.orderId || payload.sourceEventId || update.customFields.ophmateOrderId;
     update.customFields.ophmateOrderNumber = payload.orderNumber || update.customFields.ophmateOrderNumber;
     update.customFields.ophmateOrderStatus = payload.orderStatus || update.customFields.ophmateOrderStatus;
+    update.customFields.ophmatePaymentMethod = payload.paymentMethod || update.customFields.ophmatePaymentMethod;
+    update.customFields.ophmateItems = Array.isArray(payload.items) ? payload.items.map(normalizeItem) : update.customFields.ophmateItems || [];
+    update.customFields.ophmateItemsSummary = payload.orderSummary || update.customFields.ophmateItemsSummary || "";
+    update.customFields.ophmateShippingAddress = payload.shippingAddress ? normalizeShippingAddress(payload.shippingAddress) : update.customFields.ophmateShippingAddress || null;
+    update.customFields.ophmateShippingAddressText = payload.metadata?.shippingAddressText || update.customFields.ophmateShippingAddressText || "";
+    update.customFields.ophmateOrderPlacedAt = payload.orderPlacedAt || update.customFields.ophmateOrderPlacedAt || payload.timestamp || new Date().toISOString();
+    update.customFields.ophmateOrderDate = payload.metadata?.orderDate || update.customFields.ophmateOrderDate || "";
+    update.customFields.ophmateOrderTime = payload.metadata?.orderTime || update.customFields.ophmateOrderTime || "";
+  }
+
+  if (payload.eventType === "order.completed") {
+    update.totalOrders = Math.max(
+      Number(existing.totalOrders || 0) + 1,
+      Number(payload.totalOrders || 0),
+    );
+    update.totalSpent = Math.max(Number(existing.totalSpent || 0), Number(payload.totalSpent || existing.totalSpent || 0));
+    update.lastOrderDate = payload.timestamp ? new Date(payload.timestamp) : new Date();
+    update.customFields.ophmateOrderStatus = "completed";
+    update.customFields.ophmateCartStatus = "recovered";
+    update.customFields.ophmatePaymentMethod = payload.paymentMethod || update.customFields.ophmatePaymentMethod;
+    update.customFields.ophmateItems = Array.isArray(payload.items) ? payload.items.map(normalizeItem) : update.customFields.ophmateItems || [];
+    update.customFields.ophmateItemsSummary = payload.orderSummary || update.customFields.ophmateItemsSummary || "";
+    update.customFields.ophmateShippingAddress = payload.shippingAddress ? normalizeShippingAddress(payload.shippingAddress) : update.customFields.ophmateShippingAddress || null;
+    update.customFields.ophmateShippingAddressText = payload.metadata?.shippingAddressText || update.customFields.ophmateShippingAddressText || "";
+    update.customFields.ophmateOrderPlacedAt = payload.orderPlacedAt || update.customFields.ophmateOrderPlacedAt || payload.timestamp || new Date().toISOString();
+    update.customFields.ophmateOrderDate = payload.metadata?.orderDate || update.customFields.ophmateOrderDate || "";
+    update.customFields.ophmateOrderTime = payload.metadata?.orderTime || update.customFields.ophmateOrderTime || "";
   }
 
   if (payload.eventType === "payment.success") {
     update.customFields.ophmatePaymentStatus = "paid";
     update.customFields.ophmatePaymentId = payload.paymentId || "";
     update.customFields.ophmateOrderStatus = payload.orderStatus || update.customFields.ophmateOrderStatus;
+    update.customFields.ophmatePaymentMethod = payload.paymentMethod || update.customFields.ophmatePaymentMethod;
+    update.customFields.ophmateItems = Array.isArray(payload.items) ? payload.items.map(normalizeItem) : update.customFields.ophmateItems || [];
+    update.customFields.ophmateItemsSummary = payload.orderSummary || update.customFields.ophmateItemsSummary || "";
+    update.customFields.ophmateShippingAddress = payload.shippingAddress ? normalizeShippingAddress(payload.shippingAddress) : update.customFields.ophmateShippingAddress || null;
+    update.customFields.ophmateShippingAddressText = payload.metadata?.shippingAddressText || update.customFields.ophmateShippingAddressText || "";
+    update.customFields.ophmateOrderPlacedAt = payload.orderPlacedAt || update.customFields.ophmateOrderPlacedAt || payload.timestamp || new Date().toISOString();
+    update.customFields.ophmateOrderDate = payload.metadata?.orderDate || update.customFields.ophmateOrderDate || "";
+    update.customFields.ophmateOrderTime = payload.metadata?.orderTime || update.customFields.ophmateOrderTime || "";
     update.totalSpent = Math.max(Number(existing.totalSpent || 0), Number(payload.totalSpent || existing.totalSpent || 0));
   }
 
@@ -240,8 +375,34 @@ const upsertSubscriberFromEvent = async (payload) => {
     update.customFields.ophmateDeliveredAt = payload.timestamp || new Date().toISOString();
   }
 
+  if (payload.eventType === "cart.created") {
+    update.customFields.ophmateCartStatus = "active";
+    update.customFields.ophmateCartUpdatedAt = payload.timestamp || new Date().toISOString();
+    update.customFields.ophmateCartValue = Number(payload.amount || existing.customFields?.ophmateCartValue || 0);
+    update.customFields.ophmateCartItems = Array.isArray(payload.items) ? payload.items.map(normalizeItem) : update.customFields.ophmateCartItems || [];
+    update.customFields.ophmateCartItemsSummary = payload.orderSummary || update.customFields.ophmateCartItemsSummary || "";
+  }
+
+  if (payload.eventType === "cart.abandoned") {
+    update.customFields.ophmateCartStatus = "abandoned";
+    update.customFields.ophmateCartUpdatedAt = payload.timestamp || new Date().toISOString();
+    update.customFields.ophmateCartValue = Number(payload.amount || existing.customFields?.ophmateCartValue || 0);
+    update.customFields.ophmateCartItems = Array.isArray(payload.items) ? payload.items.map(normalizeItem) : existing.customFields?.ophmateCartItems || [];
+    update.customFields.ophmateCartItemsSummary = payload.orderSummary || update.customFields.ophmateCartItemsSummary || "";
+  }
+
+  if (payload.eventType === "reminder.due") {
+    update.customFields.ophmateReminderStatus = "due";
+    update.customFields.ophmateReminderType = payload.reminderType || "general";
+  }
+
+  if (payload.eventType === "discount.eligible") {
+    update.customFields.ophmateDiscountEligible = true;
+    update.customFields.ophmateDiscountCode = payload.discountCode || existing.customFields?.ophmateDiscountCode || "";
+  }
+
   return Subscriber.findByIdAndUpdate(existing._id, update, {
-    new: true,
+    returnDocument: "after",
     runValidators: true,
   });
 };
@@ -271,11 +432,31 @@ const createIntegrationEvent = async (payload, subscriberId, status = "received"
   };
 
   if (query) {
-    return IntegrationEvent.findOneAndUpdate(
-      query,
-      { $setOnInsert: baseDoc, $set: { subscriberId: subscriberId || null, status, processedAt: baseDoc.processedAt, workflowResults: baseDoc.workflowResults, errorMessage } },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
-    );
+    try {
+      return await IntegrationEvent.findOneAndUpdate(
+        query,
+        {
+          $setOnInsert: baseDoc,
+          $set: {
+            subscriberId: subscriberId || null,
+            status,
+            processedAt: baseDoc.processedAt,
+            workflowResults: baseDoc.workflowResults,
+            errorMessage,
+          },
+        },
+        { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
+      );
+    } catch (error) {
+      if (error?.code === 11000) {
+        const existing = await IntegrationEvent.findOne(query);
+        if (existing) {
+          return existing;
+        }
+      }
+
+      throw error;
+    }
   }
 
   return IntegrationEvent.create(baseDoc);
@@ -330,12 +511,12 @@ const ingestOphmateEvent = async (req, res) => {
     const subscriber = await upsertSubscriberFromEvent(payload);
     const storedEvent = await createIntegrationEvent(payload, subscriber?._id, "received");
 
-    const trigger = eventTriggerMap[payload.eventType];
+    const triggers = eventTriggerMap[payload.eventType];
     let workflowResults = [];
 
-    if (trigger) {
-      workflowResults = await triggerWorkflowExecutions({
-        trigger,
+    if (triggers) {
+      workflowResults = await triggerWorkflowExecutionsForTriggers({
+        triggers,
         subscriberId: subscriber?._id || null,
         context: {
           source: "ophmate",
@@ -366,7 +547,7 @@ const ingestOphmateEvent = async (req, res) => {
       success: true,
       message: "Event processed",
       eventType: payload.eventType,
-      trigger: trigger || null,
+      trigger: triggers || null,
       workflowCount: workflowResults.length,
     });
   } catch (error) {

@@ -1,7 +1,7 @@
 import jwt from "jsonwebtoken";
 import Admin from "../models/Admin.js";
 import { env } from "../config/env.js";
-import { hasPermission } from "../config/roles.js";
+import { canAccessPermission } from "../config/roles.js";
 
 const protectAdmin = async (req, res, next) => {
   try {
@@ -19,6 +19,10 @@ const protectAdmin = async (req, res, next) => {
 
     if (!admin) {
       return res.status(401).json({ message: "Admin not found" });
+    }
+
+    if (admin.accountStatus === "inactive") {
+      return res.status(403).json({ message: "Account is inactive" });
     }
 
     req.admin = admin;
@@ -45,7 +49,7 @@ const requirePermission = (permission) => (req, res, next) => {
     return res.status(401).json({ message: "Authentication required" });
   }
 
-  if (!hasPermission(req.admin.role || "super_admin", permission)) {
+  if (!canAccessPermission(req.admin, permission)) {
     return res.status(403).json({ message: "Insufficient permission" });
   }
 

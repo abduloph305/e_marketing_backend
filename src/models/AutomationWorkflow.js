@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 
 export const automationTriggers = [
   "welcome_signup",
+  "welcome_series",
   "order_confirmation",
   "payment_success",
   "shipping_update",
@@ -14,6 +15,8 @@ export const automationTriggers = [
   "price_drop",
   "back_in_stock",
   "inactive_subscriber",
+  "reminder_email",
+  "discount_offer",
 ];
 
 export const automationWorkflowStatuses = ["draft", "active", "inactive", "archived"];

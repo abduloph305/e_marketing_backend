@@ -25,11 +25,30 @@ const getSesClient = () => {
   return sesClient;
 };
 
+const getNestedValue = (object, path) => {
+  if (!object || !path) {
+    return "";
+  }
+
+  return String(path)
+    .split(".")
+    .reduce((value, key) => (value == null ? "" : value[key]), object);
+};
+
 const renderTemplate = (htmlContent, subscriber = {}) =>
-  htmlContent
-    .replaceAll("{{firstName}}", subscriber.firstName || "")
-    .replaceAll("{{lastName}}", subscriber.lastName || "")
-    .replaceAll("{{email}}", subscriber.email || "");
+  String(htmlContent || "").replace(/{{\s*([^}]+)\s*}}/g, (_match, token) => {
+    const value = getNestedValue(subscriber, token.trim());
+
+    if (value === null || value === undefined) {
+      return "";
+    }
+
+    if (typeof value === "object") {
+      return JSON.stringify(value);
+    }
+
+    return String(value);
+  });
 
 const escapeHtml = (value = "") =>
   value
@@ -179,13 +198,21 @@ const buildAutomationEmailPayload = ({
     throw new Error("Automation sender email is missing");
   }
 
+  const renderedRecipient = {
+    ...recipient,
+    customFields: recipient.customFields || {},
+  };
+
+  const renderedSubject = renderTemplate(subject || template.subject || "Automation email", renderedRecipient);
+  const renderedPreviewText = renderTemplate(previewText, renderedRecipient);
+  const renderedHtml = template.htmlContent ? renderTemplate(template.htmlContent, renderedRecipient) : "";
   const content = template.htmlContent
-    ? renderTemplate(template.htmlContent, recipient)
+    ? renderedHtml
     : "";
 
   const htmlContent = injectTrackingPixel(
     rewriteTrackedLinks(
-      previewText ? `<!-- ${escapeHtml(previewText)} -->\n${content}` : content,
+      renderedPreviewText ? `<!-- ${escapeHtml(renderedPreviewText)} -->\n${content}` : content,
       tracking?.clickTrackingUrl || ""
     ),
     tracking?.trackingPixelUrl || ""
@@ -200,19 +227,19 @@ const buildAutomationEmailPayload = ({
     Content: {
       Simple: {
         Subject: {
-          Data: subject || template.subject || "Automation email",
+          Data: renderedSubject,
         },
         Body: {
           Html: {
             Data: htmlContent,
           },
           Text: {
-            Data: previewText
-              ? `${previewText}\n\n${subject || template.subject || "Automation email"}`
-              : subject || template.subject || "Automation email",
-          },
+          Data: previewText
+            ? `${renderedPreviewText}\n\n${renderedSubject}`
+            : renderedSubject,
         },
       },
+    },
     },
     EmailTags: [
       { Name: "mode", Value: "automation" },
@@ -242,9 +269,54 @@ const sendAutomationEmail = async ({
     })
   );
 
+const sendTransactionalEmail = async ({
+  to,
+  subject,
+  html,
+  text = "",
+  fromName = env.automationFromName || "SellersLogin",
+  fromEmail = env.automationFromEmail || env.adminEmail,
+  replyTo = env.adminEmail || "",
+  tags = [],
+}) => {
+  if (!fromEmail) {
+    throw new Error("Transactional sender email is missing");
+  }
+
+  return sendEmailCommand({
+    FromEmailAddress: `${fromName} <${fromEmail}>`,
+    Destination: {
+      ToAddresses: [to],
+    },
+    ReplyToAddresses: replyTo ? [replyTo] : undefined,
+    Content: {
+      Simple: {
+        Subject: {
+          Data: subject,
+        },
+        Body: {
+          Html: {
+            Data: html,
+          },
+          Text: {
+            Data: text || subject,
+          },
+        },
+      },
+    },
+    EmailTags: [
+      { Name: "mode", Value: "transactional" },
+      { Name: "recipientEmail", Value: to },
+      ...tags,
+    ],
+    ConfigurationSetName: env.sesConfigurationSet || undefined,
+  });
+};
+
 export {
   buildPersonalizedEmailPayload,
   sendCampaign,
   sendTestEmail,
   sendAutomationEmail,
+  sendTransactionalEmail,
 };
