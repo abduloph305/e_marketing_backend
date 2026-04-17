@@ -1,6 +1,6 @@
 # environment files
 .env
-.en.example
+.env.example
 .env.local
 .env.development.local
 
