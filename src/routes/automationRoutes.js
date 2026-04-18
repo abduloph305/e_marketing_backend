@@ -9,6 +9,7 @@ import {
   getWorkflowById,
   getWorkflowExecutions,
   listWorkflows,
+  previewWorkflowEmail,
   triggerWorkflows,
   updateWorkflow,
 } from "../controllers/automationController.js";
@@ -20,6 +21,7 @@ router.use(protectAdmin);
 
 router.get("/meta", getAutomationMeta);
 router.get("/", listWorkflows);
+router.post("/preview-email", previewWorkflowEmail);
 router.get("/:id", getWorkflowById);
 router.get("/:id/executions", getWorkflowExecutions);
 router.post("/", createWorkflow);

@@ -315,6 +315,8 @@ const sendTransactionalEmail = async ({
 
 export {
   buildPersonalizedEmailPayload,
+  buildAutomationEmailPayload,
+  renderTemplate,
   sendCampaign,
   sendTestEmail,
   sendAutomationEmail,

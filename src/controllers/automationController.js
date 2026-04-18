@@ -22,6 +22,15 @@ import {
   registerEcommerceAutomationHooks,
   replaceWorkflowSteps,
 } from "../services/automationService.js";
+import { buildAutomationEmailPayload } from "../services/sesService.js";
+
+const escapeHtml = (value = "") =>
+  String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 
 const buildWorkflowMatch = (query) => {
   const match = {};
@@ -231,6 +240,98 @@ const getWorkflowExecutions = async (req, res) => {
   });
 };
 
+const previewWorkflowEmail = async (req, res) => {
+  const workflowId = req.body.workflowId || req.params.id || null;
+  const workflowPayload = req.body.workflow || null;
+  const recipientEmail = String(req.body.recipientEmail || req.body.email || env.adminEmail || "preview@example.com")
+    .trim()
+    .toLowerCase();
+  const previewFirstName = String(req.body.firstName || "Preview").trim() || "Preview";
+  const previewLastName = String(req.body.lastName || "Recipient").trim() || "Recipient";
+
+  let workflow = workflowPayload;
+
+  if (workflowId) {
+    const loadedWorkflow = await buildWorkflowDetailPayload(workflowId);
+
+    if (!loadedWorkflow) {
+      return res.status(404).json({ message: "Workflow not found" });
+    }
+
+    workflow = workflowPayload
+      ? { ...loadedWorkflow, ...workflowPayload, steps: workflowPayload.steps || loadedWorkflow.steps || [] }
+      : loadedWorkflow;
+  }
+
+  if (!workflow) {
+    return res.status(400).json({ message: "Workflow data is required" });
+  }
+
+  const steps = Array.isArray(workflow.steps) ? workflow.steps : [];
+  const emailStep = steps.find((step) => step.type === "send_email") || null;
+  const templateId = emailStep?.config?.templateId || "";
+  const template = templateId ? await EmailTemplate.findById(templateId).lean() : null;
+  const hasRenderableTemplate = Boolean(template?.htmlContent);
+
+  try {
+    const recipient = {
+      email: recipientEmail,
+      firstName: previewFirstName,
+      lastName: previewLastName,
+      customFields: {},
+    };
+
+    const payload = hasRenderableTemplate
+      ? buildAutomationEmailPayload({
+          template,
+          recipient,
+          subject: emailStep?.config?.subjectOverride?.trim() || template.subject,
+          previewText: template.previewText || workflow.description || workflow.name,
+        })
+      : null;
+
+    const fallbackTitle = workflow.name || "Untitled workflow";
+    const fallbackDescription = workflow.description || "This workflow is ready for trigger-based execution.";
+    const fallbackSubject = emailStep?.config?.subjectOverride?.trim() || template?.subject || fallbackTitle;
+    const fallbackTemplateName = template?.name || emailStep?.title || "No template selected";
+    const fallbackPreviewText = template?.previewText || fallbackDescription || fallbackTitle;
+
+    const fallbackHtml = `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#f8fafc;color:#0f172a;font-family:Arial,sans-serif;">
+    <div style="max-width:760px;margin:0 auto;padding:24px;">
+      <div style="border:1px solid #e5e7eb;border-radius:24px;background:#fff;padding:24px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;color:#94a3b8;">Automation preview</div>
+        <h1 style="margin:10px 0 0;font-size:34px;line-height:1.15;color:#0f172a;">${escapeHtml(fallbackTitle)}</h1>
+        <p style="margin:14px 0 0;font-size:16px;line-height:1.8;color:#475467;">${escapeHtml(fallbackDescription)}</p>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:18px;">
+          <span style="border:1px solid #e5e7eb;border-radius:999px;background:#f8fafc;padding:7px 12px;font-size:12px;font-weight:700;color:#475467;">Recipient: ${escapeHtml(recipient.email)}</span>
+          <span style="border:1px solid #e5e7eb;border-radius:999px;background:#f8fafc;padding:7px 12px;font-size:12px;font-weight:700;color:#475467;">${escapeHtml(fallbackTemplateName)}</span>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>`;
+
+    return res.json({
+      workflowId: workflowId || null,
+      workflowName: fallbackTitle,
+      trigger: workflow.trigger || "",
+      templateId,
+      templateName: fallbackTemplateName,
+      stepTitle: emailStep?.title || "Send email",
+      stepType: emailStep?.type || "send_email",
+      recipientEmail,
+      subject: hasRenderableTemplate ? payload.Content?.Simple?.Subject?.Data || template.subject || "" : fallbackSubject,
+      html: hasRenderableTemplate ? payload.Content?.Simple?.Body?.Html?.Data || "" : fallbackHtml,
+      text: hasRenderableTemplate ? payload.Content?.Simple?.Body?.Text?.Data || "" : fallbackPreviewText,
+      previewText: fallbackPreviewText,
+    });
+  } catch (error) {
+    return res.status(400).json({ message: error.message || "Unable to render workflow preview" });
+  }
+};
+
 const createSampleExecution = async (req, res) => {
   const workflow = await AutomationWorkflow.findById(req.params.id);
 
@@ -239,13 +340,21 @@ const createSampleExecution = async (req, res) => {
   }
 
   try {
+    const recipientEmail = String(req.body.recipientEmail || req.body.email || env.adminEmail || "preview@example.com")
+      .trim()
+      .toLowerCase();
+    const previewFirstName = String(req.body.firstName || "Preview").trim() || "Preview";
+    const previewLastName = String(req.body.lastName || "Recipient").trim() || "Recipient";
+
     const execution = await createWorkflowExecution({
       workflowId: workflow._id,
       trigger: workflow.trigger,
       context: {
         source: "manual_preview",
         notes: "Created from the dashboard to validate workflow structure.",
-        previewRecipientEmail: env.adminEmail || "preview@example.com",
+        previewRecipientEmail: recipientEmail,
+        previewFirstName,
+        previewLastName,
       },
     });
 
@@ -306,6 +415,7 @@ export {
   activateWorkflow,
   deactivateWorkflow,
   getWorkflowExecutions,
+  previewWorkflowEmail,
   createSampleExecution,
   deleteWorkflow,
   triggerWorkflows,

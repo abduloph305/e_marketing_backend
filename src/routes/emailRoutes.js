@@ -1,5 +1,6 @@
 import express from "express";
 import {
+  sendAdHocTestEmail,
   sendCampaign,
   sendTestEmail,
 } from "../controllers/emailController.js";
@@ -39,6 +40,7 @@ router.post("/suppressions", createSuppression);
 router.post("/suppressions/:id/unsuppress", unsuppressEntry);
 router.post("/subscribers/:id/unsubscribe", unsubscribeSubscriber);
 router.post("/subscribers/:id/suppress", suppressSubscriber);
+router.post("/test-send", sendAdHocTestEmail);
 router.post("/campaigns/:id/send-test", sendTestEmail);
 router.post("/campaigns/:id/send", sendCampaign);
 

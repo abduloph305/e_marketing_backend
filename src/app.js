@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import path from "path";
 import authRoutes from "./routes/authRoutes.js";
 import automationRoutes from "./routes/automationRoutes.js";
 import campaignRoutes from "./routes/campaignRoutes.js";
@@ -12,6 +13,7 @@ import teamRoutes from "./routes/teamRoutes.js";
 import subscriberRoutes from "./routes/subscriberRoutes.js";
 import segmentRoutes from "./routes/segmentRoutes.js";
 import templateRoutes from "./routes/templateRoutes.js";
+import uploadRoutes from "./routes/uploadRoutes.js";
 import { env } from "./config/env.js";
 
 const app = express();
@@ -37,6 +39,7 @@ app.use(
 
 app.use(express.json());
 app.use(cookieParser());
+app.use("/uploads", express.static(path.resolve(process.cwd(), "uploads")));
 
 app.get("/api", (_req, res) => {
   res.json({ status: "ok" });
@@ -53,6 +56,7 @@ app.use("/api/templates", templateRoutes);
 app.use("/api/campaigns", campaignRoutes);
 app.use("/api/subscribers", subscriberRoutes);
 app.use("/api/segments", segmentRoutes);
+app.use("/api/uploads", uploadRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ message: `Route not found: ${req.originalUrl}` });
