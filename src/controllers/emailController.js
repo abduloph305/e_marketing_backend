@@ -10,6 +10,16 @@ const campaignPopulate = [
   { path: "segmentId", select: "name rules" },
 ];
 
+const parseEmailList = (value) =>
+  Array.from(
+    new Set(
+      (Array.isArray(value) ? value : [value])
+        .flatMap((entry) => String(entry || "").split(/[\n,]+/))
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+
 const sendTestEmail = async (req, res) => {
   try {
     const campaign = await EmailCampaign.findById(req.params.id).populate(campaignPopulate);
@@ -18,32 +28,42 @@ const sendTestEmail = async (req, res) => {
       return res.status(404).json({ message: "Campaign or template not found" });
     }
 
-    const testRecipient = req.body.email?.trim().toLowerCase();
+    const testRecipients = parseEmailList(req.body.emails || req.body.email);
 
-    if (!testRecipient) {
+    if (!testRecipients.length) {
       return res.status(400).json({ message: "Test recipient email is required" });
     }
 
-    const { messageId } = await sendTestEmailThroughSes({
-      campaign,
-      recipientEmail: testRecipient,
-    });
+    const results = [];
 
-    await logCampaignActivity(campaign._id, "test_sent", "Test email sent", {
-      recipientEmail: testRecipient,
-      messageId,
-    });
+    for (const recipientEmail of testRecipients) {
+      const { messageId } = await sendTestEmailThroughSes({
+        campaign,
+        recipientEmail,
+      });
 
-    await storeEmailEvent({
-      campaignId: campaign._id,
-      recipientEmail: testRecipient,
-      messageId,
-      eventType: "send",
-      timestamp: new Date(),
-      rawPayload: { mode: "test" },
-    });
+      await logCampaignActivity(campaign._id, "test_sent", "Test email sent", {
+        recipientEmail,
+        messageId,
+      });
 
-    return res.json({ message: "Test email sent", messageId });
+      await storeEmailEvent({
+        campaignId: campaign._id,
+        recipientEmail,
+        messageId,
+        eventType: "send",
+        timestamp: new Date(),
+        rawPayload: { mode: "test" },
+      });
+
+      results.push({ recipientEmail, messageId });
+    }
+
+    return res.json({
+      message: "Test email sent",
+      count: results.length,
+      results,
+    });
   } catch (error) {
     return res.status(400).json({ message: error.message || "Unable to send test email" });
   }
@@ -72,12 +92,12 @@ const stripHtml = (html = "") =>
 
 const sendAdHocTestEmail = async (req, res) => {
   try {
-    const recipientEmail = String(req.body.email || "").trim().toLowerCase();
+    const recipientEmails = parseEmailList(req.body.emails || req.body.email);
     const subject = String(req.body.subject || "").trim();
     const html = String(req.body.html || "").trim();
     const message = String(req.body.message || "").trim();
 
-    if (!recipientEmail) {
+    if (!recipientEmails.length) {
       return res.status(400).json({ message: "Recipient email is required" });
     }
 
@@ -91,16 +111,23 @@ const sendAdHocTestEmail = async (req, res) => {
 
     const text = message ? `${message}\n\n${stripHtml(html)}` : stripHtml(html);
 
-    const { messageId } = await sendTransactionalEmail({
-      to: recipientEmail,
-      subject,
-      html,
-      text: text || subject,
-    });
+    const results = [];
+
+    for (const recipientEmail of recipientEmails) {
+      const { messageId } = await sendTransactionalEmail({
+        to: recipientEmail,
+        subject,
+        html,
+        text: text || subject,
+      });
+
+      results.push({ recipientEmail, messageId });
+    }
 
     return res.json({
       message: "Test email sent",
-      messageId,
+      count: results.length,
+      results,
     });
   } catch (error) {
     return res.status(400).json({ message: error.message || "Unable to send test email" });

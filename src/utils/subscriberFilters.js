@@ -40,6 +40,7 @@ const buildSearchQuery = (search) => {
       { state: pattern },
       { country: pattern },
       { source: pattern },
+      { sourceLocation: pattern },
       { notes: pattern },
       { tags: pattern },
     ],
@@ -75,6 +76,13 @@ const buildRuleCondition = ({ field, operator, value }) => {
   if (field === "source") {
     const values = normalizeArray(value);
     return values.length === 1 ? { source: values[0] } : { source: { $in: values } };
+  }
+
+  if (field === "sourceLocation") {
+    const values = normalizeArray(value);
+    return values.length === 1
+      ? { sourceLocation: values[0] }
+      : { sourceLocation: { $in: values } };
   }
 
   if (field === "tags") {
@@ -189,7 +197,17 @@ const buildRuleCondition = ({ field, operator, value }) => {
 
 const buildSubscriberMatch = (input = {}) => {
   const conditions = [];
-  const { search, status, tags, country, state, city, source, rules = [] } = input;
+  const {
+    search,
+    status,
+    tags,
+    country,
+    state,
+    city,
+    source,
+    sourceLocation,
+    rules = [],
+  } = input;
 
   const searchQuery = buildSearchQuery(search);
   if (searchQuery) {
@@ -207,6 +225,16 @@ const buildSubscriberMatch = (input = {}) => {
   if (sources.length) {
     conditions.push({
       source: sources.length === 1 ? sources[0] : { $in: sources },
+    });
+  }
+
+  const sourceLocations = normalizeArray(sourceLocation);
+  if (sourceLocations.length) {
+    conditions.push({
+      sourceLocation:
+        sourceLocations.length === 1
+          ? sourceLocations[0]
+          : { $in: sourceLocations },
     });
   }
 

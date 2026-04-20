@@ -92,6 +92,33 @@ const normalizeTags = (tags = []) =>
 
 const normalizeEmail = (value = "") => String(value).trim().toLowerCase();
 
+const normalizeSourceLocation = (payload = {}) => {
+  const rawValue = String(
+    payload.sourceLocation ||
+      payload.source_location ||
+      payload.websiteSource ||
+      payload.website_source ||
+      payload.source ||
+      "",
+  )
+    .trim()
+    .toLowerCase();
+
+  if (!rawValue) {
+    return "manual";
+  }
+
+  if (["main_website", "ophmate", "ophmart", "main", "website"].includes(rawValue)) {
+    return "main_website";
+  }
+
+  if (["vendor_website", "template", "template-vendor", "vendor"].includes(rawValue)) {
+    return "vendor_website";
+  }
+
+  return rawValue;
+};
+
 const normalizeItem = (item = {}) => ({
   productId: String(item.productId || item.product_id || "").trim(),
   variantId: String(item.variantId || item.variant_id || "").trim(),
@@ -221,6 +248,7 @@ const resolveSubscriberPayload = (payload = {}) => {
       ophmateCartItemsSummary: payload.orderSummary || formatItemsSummary(items),
     },
     source: eventSourceMap[payload.eventType] || payload.source || "manual",
+    sourceLocation: normalizeSourceLocation(payload),
     tags: normalizeTags([
       ...(Array.isArray(payload.tags) ? payload.tags : []),
       payload.tag || "",
@@ -294,6 +322,7 @@ const upsertSubscriberFromEvent = async (payload) => {
     state: nextSubscriberPayload.state || existing.state || "",
     country: nextSubscriberPayload.country || existing.country || "",
     source: existing.source || nextSubscriberPayload.source,
+    sourceLocation: existing.sourceLocation || nextSubscriberPayload.sourceLocation,
     tags: nextTags,
     totalOrders: nextTotalOrders,
     totalSpent: nextTotalSpent,
@@ -495,6 +524,7 @@ const ingestOphmateEvent = async (req, res) => {
   const payload = {
     ...(req.body || {}),
     source: String(req.body?.source || "ophmate").trim().toLowerCase(),
+    sourceLocation: normalizeSourceLocation(req.body || {}),
     eventType: String(req.body?.eventType || "").trim(),
     email: normalizeEmail(req.body?.email || req.body?.recipientEmail || ""),
   };
@@ -520,6 +550,7 @@ const ingestOphmateEvent = async (req, res) => {
         subscriberId: subscriber?._id || null,
         context: {
           source: "ophmate",
+          sourceLocation: normalizeSourceLocation(payload),
           eventType: payload.eventType,
           sourceEventId: payload.sourceEventId || payload.eventId || payload.orderId || "",
           orderId: payload.orderId || "",

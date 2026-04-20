@@ -332,6 +332,16 @@ const previewWorkflowEmail = async (req, res) => {
   }
 };
 
+const parseEmailList = (value) =>
+  Array.from(
+    new Set(
+      (Array.isArray(value) ? value : [value])
+        .flatMap((entry) => String(entry || "").split(/[\n,]+/))
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  );
+
 const createSampleExecution = async (req, res) => {
   const workflow = await AutomationWorkflow.findById(req.params.id);
 
@@ -340,27 +350,32 @@ const createSampleExecution = async (req, res) => {
   }
 
   try {
-    const recipientEmail = String(req.body.recipientEmail || req.body.email || env.adminEmail || "preview@example.com")
-      .trim()
-      .toLowerCase();
+    const recipientEmails = parseEmailList(
+      req.body.emails || req.body.recipientEmail || req.body.email || env.adminEmail || "preview@example.com",
+    );
     const previewFirstName = String(req.body.firstName || "Preview").trim() || "Preview";
     const previewLastName = String(req.body.lastName || "Recipient").trim() || "Recipient";
 
-    const execution = await createWorkflowExecution({
-      workflowId: workflow._id,
-      trigger: workflow.trigger,
-      context: {
-        source: "manual_preview",
-        notes: "Created from the dashboard to validate workflow structure.",
-        previewRecipientEmail: recipientEmail,
-        previewFirstName,
-        previewLastName,
-      },
-    });
+    const results = [];
 
-    await processWorkflowExecution(execution._id);
+    for (const recipientEmail of recipientEmails) {
+      const execution = await createWorkflowExecution({
+        workflowId: workflow._id,
+        trigger: workflow.trigger,
+        context: {
+          source: "manual_preview",
+          notes: "Created from the dashboard to validate workflow structure.",
+          previewRecipientEmail: recipientEmail,
+          previewFirstName,
+          previewLastName,
+        },
+      });
 
-    return res.json({ message: "Sample execution processed" });
+      await processWorkflowExecution(execution._id);
+      results.push({ recipientEmail, executionId: execution._id });
+    }
+
+    return res.json({ message: "Sample execution processed", count: results.length, results });
   } catch (error) {
     return res.status(400).json({ message: error.message || "Unable to process sample execution" });
   }

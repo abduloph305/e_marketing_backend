@@ -41,6 +41,18 @@ const env = {
     process.env.OPHMATE_INTERNAL_PASSWORD ||
     process.env.SUPERADMIN_PASSWORD ||
     "",
+  vendorInternalApiUrl:
+    process.env.VENDOR_INTERNAL_API_URL ||
+    process.env.TEMPLATE_VENDOR_INTERNAL_API_URL ||
+    "",
+  vendorInternalEmail:
+    process.env.VENDOR_INTERNAL_EMAIL ||
+    process.env.TEMPLATE_VENDOR_INTERNAL_EMAIL ||
+    "",
+  vendorInternalPassword:
+    process.env.VENDOR_INTERNAL_PASSWORD ||
+    process.env.TEMPLATE_VENDOR_INTERNAL_PASSWORD ||
+    "",
   publicAppUrl:
     process.env.PUBLIC_APP_URL ||
     process.env.APP_URL ||

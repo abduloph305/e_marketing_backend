@@ -52,6 +52,11 @@ const subscriberSchema = new mongoose.Schema(
       enum: subscriberSources,
       default: "manual",
     },
+    sourceLocation: {
+      type: String,
+      trim: true,
+      default: "manual",
+    },
     tags: {
       type: [String],
       default: [],

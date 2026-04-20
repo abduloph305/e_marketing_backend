@@ -6,7 +6,7 @@ import Subscriber, {
 } from "../models/Subscriber.js";
 import SuppressionEntry from "../models/SuppressionEntry.js";
 import { triggerWorkflowExecutions } from "../services/automationService.js";
-import { cleanupDeletedWebsiteSubscribers } from "../services/ophmateSyncService.js";
+import { syncWebsiteAudience } from "../services/websiteAudienceSyncService.js";
 import { buildSubscriberMatch } from "../utils/subscriberFilters.js";
 
 const normalizeTags = (tags = []) =>
@@ -32,6 +32,44 @@ const normalizeCustomFields = (customFields = {}) => {
   }
 
   return customFields;
+};
+
+const resolveSourceLocation = (subscriber = {}) => {
+  const sourceLocation = String(subscriber.sourceLocation || "").trim();
+  if (sourceLocation) {
+    return sourceLocation;
+  }
+
+  const customSourceLocation = String(
+    subscriber.customFields?.audienceSourceLocation ||
+      (Array.isArray(subscriber.customFields?.sourceLocations)
+        ? subscriber.customFields.sourceLocations[0]
+        : "") ||
+      "",
+  ).trim();
+
+  if (customSourceLocation) {
+    return customSourceLocation;
+  }
+
+  const source = String(subscriber.source || "").trim();
+  if (
+    [
+      "website_signup",
+      "checkout",
+      "popup",
+      "lead_magnet",
+      "referral",
+    ].includes(source)
+  ) {
+    return "main_website";
+  }
+
+  if (source === "admin_import") {
+    return "admin";
+  }
+
+  return source || "manual";
 };
 
 const titleCase = (value = "") =>
@@ -92,6 +130,18 @@ const calculateEngagementSummary = (payload) => {
 const normalizeSubscriberPayload = (payload) => {
   const email = payload.email?.trim().toLowerCase();
   const derivedNames = email ? deriveNamesFromEmail(email) : {};
+  const sourceLocation = String(
+    payload.sourceLocation ||
+      payload.source_location ||
+      payload.customFields?.audienceSourceLocation ||
+      "manual",
+  ).trim();
+  const sourceLocations = normalizeTags([
+    sourceLocation,
+    ...(Array.isArray(payload.customFields?.sourceLocations)
+      ? payload.customFields.sourceLocations
+      : []),
+  ]);
   const normalized = {
     firstName: payload.firstName?.trim() || derivedNames.firstName || "",
     lastName: payload.lastName?.trim() || derivedNames.lastName || "",
@@ -99,6 +149,7 @@ const normalizeSubscriberPayload = (payload) => {
     phone: payload.phone?.trim() || "",
     status: payload.status,
     source: payload.source || "manual",
+    sourceLocation,
     tags: normalizeTags(payload.tags),
     city: payload.city?.trim() || "",
     state: payload.state?.trim() || "",
@@ -110,7 +161,10 @@ const normalizeSubscriberPayload = (payload) => {
     lastOpenAt: payload.lastOpenAt || null,
     lastClickAt: payload.lastClickAt || null,
     notes: payload.notes?.trim() || "",
-    customFields: normalizeCustomFields(payload.customFields),
+    customFields: {
+      ...normalizeCustomFields(payload.customFields),
+      sourceLocations,
+    },
   };
 
   return {
@@ -200,6 +254,7 @@ const buildDetailPayload = async (subscriber) => {
 
   return {
     ...subscriber.toObject(),
+    sourceLocation: resolveSourceLocation(subscriber.toObject()),
     campaignHistory,
     recentEmailEvents,
     suppressionStatus: suppressionEntry
@@ -217,9 +272,9 @@ const buildDetailPayload = async (subscriber) => {
 
 const runBestEffortCleanup = async () => {
   try {
-    await cleanupDeletedWebsiteSubscribers();
+    await syncWebsiteAudience();
   } catch (error) {
-    console.warn("OphMate cleanup skipped", error?.message || error);
+    console.warn("Audience sync skipped", error?.message || error);
   }
 };
 
@@ -233,12 +288,9 @@ const getSubscriberSummary = async (_req, res) => {
   try {
     await runBestEffortCleanup();
 
-    const [statusCounts, sourceCounts, totals] = await Promise.all([
+    const [statusCounts, totals, sourceDocs] = await Promise.all([
       Subscriber.aggregate([
         { $group: { _id: "$status", count: { $sum: 1 } } },
-      ]),
-      Subscriber.aggregate([
-        { $group: { _id: "$source", count: { $sum: 1 } } },
       ]),
       Subscriber.aggregate([
         {
@@ -251,6 +303,9 @@ const getSubscriberSummary = async (_req, res) => {
           },
         },
       ]),
+      Subscriber.find({})
+        .select("source sourceLocation customFields")
+        .lean(),
     ]);
 
     const byStatus = statusCounts.reduce((accumulator, item) => {
@@ -258,13 +313,17 @@ const getSubscriberSummary = async (_req, res) => {
       return accumulator;
     }, {});
 
-    const bySource = sourceCounts
+    const bySourceCounts = sourceDocs.reduce((accumulator, subscriber) => {
+      const key = resolveSourceLocation(subscriber);
+      accumulator[key] = (accumulator[key] || 0) + 1;
+      return accumulator;
+    }, {});
+
+    const bySource = Object.entries(bySourceCounts)
+      .map(([source, count]) => ({ source, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5)
-      .map((item) => ({
-        source: item._id,
-        count: item.count,
-      }));
+      .map((item) => item);
 
     const total = totals[0]?.total || 0;
 
@@ -315,7 +374,10 @@ const listSubscribers = async (req, res) => {
   ]);
 
   return res.json({
-    data: subscribers,
+    data: subscribers.map((subscriber) => ({
+      ...subscriber.toObject(),
+      sourceLocation: resolveSourceLocation(subscriber.toObject()),
+    })),
     pagination: {
       page,
       limit,
@@ -339,7 +401,10 @@ const filterSubscribers = async (req, res) => {
   ]);
 
   return res.json({
-    data: subscribers,
+    data: subscribers.map((subscriber) => ({
+      ...subscriber.toObject(),
+      sourceLocation: resolveSourceLocation(subscriber.toObject()),
+    })),
     pagination: {
       page,
       limit,
@@ -556,6 +621,7 @@ const importSubscribersFromCsv = async (req, res) => {
     const payload = normalizeSubscriberPayload({
       ...row,
       source: row.source || "admin_import",
+      sourceLocation: row.sourceLocation || "admin",
       tags: row.tags || "",
     });
 
