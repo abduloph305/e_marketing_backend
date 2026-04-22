@@ -4,6 +4,7 @@ export const subscriberStatuses = [
   "subscribed",
   "unsubscribed",
   "bounced",
+  "blocked",
   "complained",
   "suppressed",
 ];
@@ -46,6 +47,15 @@ const subscriberSchema = new mongoose.Schema(
       type: String,
       enum: subscriberStatuses,
       default: "subscribed",
+    },
+    blockedReason: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    blockedAt: {
+      type: Date,
+      default: null,
     },
     source: {
       type: String,
@@ -136,6 +146,19 @@ subscriberSchema.index({
   source: "text",
   notes: "text",
 });
+
+subscriberSchema.index({ status: 1, country: 1 });
+subscriberSchema.index({ status: 1, state: 1 });
+subscriberSchema.index({ status: 1, city: 1 });
+subscriberSchema.index({ status: 1, tags: 1 });
+subscriberSchema.index({ totalOrders: 1 });
+subscriberSchema.index({ totalSpent: 1 });
+subscriberSchema.index({ engagementScore: -1 });
+subscriberSchema.index({ createdAt: -1 });
+subscriberSchema.index({ lastActivityAt: -1 });
+subscriberSchema.index({ lastOpenAt: -1 });
+subscriberSchema.index({ lastClickAt: -1 });
+subscriberSchema.index({ lastOrderDate: -1 });
 
 const Subscriber =
   mongoose.models.Subscriber || mongoose.model("Subscriber", subscriberSchema);

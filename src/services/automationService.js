@@ -5,7 +5,7 @@ import AutomationWorkflow from "../models/AutomationWorkflow.js";
 import EmailTemplate from "../models/EmailTemplate.js";
 import Segment from "../models/Segment.js";
 import Subscriber from "../models/Subscriber.js";
-import { buildSubscriberMatch } from "../utils/subscriberFilters.js";
+import { buildSegmentQuery, normalizeSegmentDefinition } from "../utils/segmentEngine.js";
 import { sendAutomationEmail } from "./sesService.js";
 
 const defaultStepTitles = {
@@ -108,7 +108,7 @@ const buildWorkflowSummary = async (workflow) => {
 const buildWorkflowDetailPayload = async (workflowId) => {
   const workflow = await AutomationWorkflow.findById(workflowId).populate({
     path: "entrySegmentId",
-    select: "name rules",
+    select: "name definition rules",
   });
 
   if (!workflow) {
@@ -240,13 +240,14 @@ const subscriberMatchesWorkflow = async (workflow, subscriber) => {
     return false;
   }
 
-  const segment = await Segment.findById(workflow.entrySegmentId).select("rules").lean();
+  const segment = await Segment.findById(workflow.entrySegmentId).select("definition rules").lean();
 
   if (!segment) {
     return false;
   }
 
-  const match = buildSubscriberMatch({ rules: segment.rules || [] });
+  const definition = normalizeSegmentDefinition(segment.definition || { rules: segment.rules || [] });
+  const match = buildSegmentQuery(definition);
   const matchedSubscriber = await Subscriber.findOne({
     _id: subscriber._id,
     ...match,

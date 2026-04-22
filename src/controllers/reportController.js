@@ -1,41 +1,18 @@
 import EmailCampaign from "../models/EmailCampaign.js";
-import EmailEvent from "../models/EmailEvent.js";
 import Subscriber from "../models/Subscriber.js";
 import SuppressionEntry from "../models/SuppressionEntry.js";
+import {
+  getConversionSummary,
+  getDeviceBreakdown,
+  getListGrowthSummary,
+  getLocationBreakdown,
+  getTimeBasedAnalytics,
+  summarizeEmailEvents,
+} from "../services/analyticsService.js";
 import { buildDateRangeMatch } from "../utils/dateRange.js";
 
 const summarizeEvents = async (match = {}) => {
-  const rows = await EmailEvent.aggregate([
-    { $match: match },
-    {
-      $group: {
-        _id: "$eventType",
-        count: { $sum: 1 },
-      },
-    },
-  ]);
-
-  const summary = {
-    sent: 0,
-    delivered: 0,
-    opens: 0,
-    clicks: 0,
-    bounces: 0,
-    complaints: 0,
-    unsubscribes: 0,
-  };
-
-  rows.forEach((row) => {
-    if (row._id === "send") summary.sent = row.count;
-    if (row._id === "delivery") summary.delivered = row.count;
-    if (row._id === "open") summary.opens = row.count;
-    if (row._id === "click") summary.clicks = row.count;
-    if (row._id === "bounce") summary.bounces = row.count;
-    if (row._id === "complaint") summary.complaints = row.count;
-    if (row._id === "unsubscribe") summary.unsubscribes = row.count;
-  });
-
-  return summary;
+  return summarizeEmailEvents(match);
 };
 
 const resolveReportWindow = (query = {}) => {
@@ -109,7 +86,7 @@ const buildWindowMatch = (window = {}, field = "createdAt") => {
 };
 
 const getRangeSummary = async (window) => {
-  const [events, campaigns, subscribers, suppressions] = await Promise.all([
+  const [events, campaigns, subscribers, suppressions, conversion, growth] = await Promise.all([
     summarizeEvents(buildWindowMatch(window, "timestamp")),
     EmailCampaign.countDocuments(buildWindowMatch(window)),
     Subscriber.countDocuments(buildWindowMatch(window)),
@@ -117,6 +94,8 @@ const getRangeSummary = async (window) => {
       status: "active",
       ...buildWindowMatch(window),
     }),
+    getConversionSummary(window),
+    getListGrowthSummary(window),
   ]);
 
   return {
@@ -124,12 +103,28 @@ const getRangeSummary = async (window) => {
     newSubscribers: subscribers,
     suppressions,
     ...events,
+    conversionCount: conversion.conversionCount,
+    uniqueConversionCount: conversion.uniqueConversionCount,
+    conversionRate: conversion.conversionRate,
+    revenueGenerated: conversion.revenueGenerated,
+    roiPercent: conversion.roiPercent,
+    averageOrderValue: conversion.averageOrderValue,
+    totalCost: conversion.totalCost,
+    profit: conversion.profit,
+    attributedConversions: conversion.attributedConversions,
+    attributedRevenue: conversion.attributedRevenue,
+    commerceOrders: conversion.commerceOrders,
+    commerceRevenue: conversion.commerceRevenue,
+    startingAudience: growth.startingAudience,
+    endingAudience: growth.endingAudience,
+    netGrowth: growth.netGrowth,
+    growthRate: growth.growthRate,
   };
 };
 
 const getCampaignReportRows = async (window = {}) => {
   const campaigns = await EmailCampaign.find()
-    .select("name status type goal totals totalRecipients sentAt scheduledAt")
+    .select("name status type goal totals totalRecipients estimatedCost sentAt scheduledAt")
     .sort({ updatedAt: -1 })
     .limit(8)
     .lean();
@@ -169,6 +164,7 @@ const getCampaignReportRows = async (window = {}) => {
       type: campaign.type,
       goal: campaign.goal,
       recipients: campaign.totalRecipients || 0,
+      estimatedCost: campaign.estimatedCost || 0,
       sent: campaign.totals?.sent || 0,
       delivered: campaign.totals?.delivered || 0,
       opens: campaign.totals?.opens || 0,
@@ -224,6 +220,9 @@ const getReportsOverview = async (req, res) => {
     campaignReport,
     audienceGrowth,
     deliverability,
+    deviceBreakdown,
+    locationBreakdown,
+    timeBasedAnalytics,
   ] = await Promise.all([
     getRangeSummary(resolveReportWindow({ range: "today" })),
     getRangeSummary(resolveReportWindow({ range: "7d" })),
@@ -232,6 +231,9 @@ const getReportsOverview = async (req, res) => {
     getCampaignReportRows(selectedWindow),
     getAudienceGrowthReport(selectedWindow),
     getDeliverabilityReport(selectedWindow),
+    getDeviceBreakdown(selectedWindow),
+    getLocationBreakdown(selectedWindow),
+    getTimeBasedAnalytics(selectedWindow),
   ]);
 
   return res.json({
@@ -248,6 +250,9 @@ const getReportsOverview = async (req, res) => {
     campaignReport,
     audienceGrowth,
     deliverability,
+    deviceBreakdown,
+    locationBreakdown,
+    timeBasedAnalytics,
     exportFormats: ["csv", "excel", "pdf_placeholder"],
   });
 };

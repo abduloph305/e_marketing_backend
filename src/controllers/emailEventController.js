@@ -27,6 +27,9 @@ const recordTrackedEvent = async (recipientId, eventType, extra = {}) => {
       ...extra,
     },
     clickedLink: extra.clickedLink || "",
+    blockId: extra.blockId || "",
+    section: extra.section || "",
+    ctaType: extra.ctaType || "",
     ipAddress: extra.ipAddress || "",
     userAgent: extra.userAgent || "",
     deviceType: extra.deviceType || "",
@@ -60,6 +63,9 @@ const trackClick = async (req, res) => {
 
   await recordTrackedEvent(req.params.recipientId, "click", {
     clickedLink: String(targetUrl),
+    blockId: req.query.blockId || "",
+    section: req.query.section || "",
+    ctaType: req.query.ctaType || "",
     ipAddress: req.ip,
     userAgent: req.headers["user-agent"] || "",
   });

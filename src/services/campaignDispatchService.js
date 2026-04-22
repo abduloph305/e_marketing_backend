@@ -10,19 +10,23 @@ import {
 import { buildNextRecurringRun } from "../utils/campaignRecurrence.js";
 import { sendCampaign as sendCampaignThroughSes } from "./sesService.js";
 import { storeEmailEvent } from "./emailEventService.js";
-import { buildSubscriberMatch } from "../utils/subscriberFilters.js";
+import { buildSegmentQuery, normalizeSegmentDefinition } from "../utils/segmentEngine.js";
 
 const campaignPopulate = [
   { path: "templateId" },
-  { path: "segmentId", select: "name rules" },
+  { path: "segmentId", select: "name definition rules" },
 ];
 
 const buildCampaignRecipients = async (campaign) => {
   let match = { status: "subscribed" };
 
-  if (campaign.segmentId?.rules?.length) {
+  const definition = normalizeSegmentDefinition(
+    campaign.segmentId?.definition || { rules: campaign.segmentId?.rules || [] },
+  );
+
+  if (definition.filters.length) {
     match = {
-      $and: [{ status: "subscribed" }, buildSubscriberMatch({ rules: campaign.segmentId.rules })],
+      $and: [{ status: "subscribed" }, buildSegmentQuery(definition)],
     };
   }
 

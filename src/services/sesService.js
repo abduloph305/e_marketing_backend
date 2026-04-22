@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import { env } from "../config/env.js";
 
@@ -58,6 +59,33 @@ const escapeHtml = (value = "") =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
+const readTrackingAttribute = (attributes = "", name = "") => {
+  if (!attributes || !name) {
+    return "";
+  }
+
+  const pattern = new RegExp(`${name}=["']([^"']+)["']`, "i");
+  const match = String(attributes).match(pattern);
+
+  return match ? decodeURIComponent(match[1]) : "";
+};
+
+const appendTrackingParams = (baseUrl, params = {}) => {
+  const url = String(baseUrl || "");
+  const queryEntries = Object.entries(params).filter(([, value]) => value);
+
+  if (!queryEntries.length) {
+    return url;
+  }
+
+  const separator = url.includes("?") ? "&" : "?";
+  const query = queryEntries
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+    .join("&");
+
+  return `${url}${separator}${query}`;
+};
+
 const injectTrackingPixel = (html, trackingPixelUrl) => {
   if (!trackingPixelUrl) {
     return html;
@@ -72,6 +100,241 @@ const injectTrackingPixel = (html, trackingPixelUrl) => {
   return `${html}${pixel}`;
 };
 
+const encodeMimeWord = (value = "") => {
+  const text = String(value || "");
+
+  if (!/[^\x00-\x7F]/.test(text)) {
+    return text;
+  }
+
+  return `=?UTF-8?B?${Buffer.from(text, "utf8").toString("base64")}?=`;
+};
+
+const wrapBase64 = (value = "") =>
+  Buffer.from(String(value || ""), "utf8")
+    .toString("base64")
+    .match(/.{1,76}/g)
+    ?.join("\r\n") || "";
+
+const wrapBinaryBase64 = (value = "") =>
+  Buffer.from(value)
+    .toString("base64")
+    .match(/.{1,76}/g)
+    ?.join("\r\n") || "";
+
+const normalizeMimeType = (value = "") => String(value || "").split(";")[0].trim().toLowerCase();
+
+const mimeTypeToExtension = (mimeType = "") => {
+  const map = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/bmp": "bmp",
+    "image/tiff": "tiff",
+    "image/x-icon": "ico",
+    "image/vnd.microsoft.icon": "ico",
+  };
+
+  return map[normalizeMimeType(mimeType)] || "png";
+};
+
+const isEmbeddableImageUrl = (url = "") => {
+  const value = String(url || "").trim();
+
+  if (!value) {
+    return false;
+  }
+
+  if (value.startsWith("cid:") || value.startsWith("data:")) {
+    return false;
+  }
+
+  return /^https?:\/\//i.test(value);
+};
+
+const fetchImageForInlineEmbedding = async (url, index) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      redirect: "follow",
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const contentType = normalizeMimeType(response.headers.get("content-type") || "");
+
+    if (!contentType.startsWith("image/")) {
+      return null;
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    if (!buffer.length) {
+      return null;
+    }
+
+    const maxInlineImageBytes = 8 * 1024 * 1024;
+    if (buffer.length > maxInlineImageBytes) {
+      return null;
+    }
+
+    const cid = `inline-image-${index}-${randomUUID()}`;
+    const ext = mimeTypeToExtension(contentType);
+
+    return {
+      cid,
+      contentType,
+      filename: `inline-image-${index}.${ext}`,
+      base64: buffer.toString("base64"),
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const embedInlineImagesInHtml = async (html = "") => {
+  const input = String(html || "");
+  const imageRegex = /<img\b([^>]*?)src=(["'])(.*?)\2([^>]*?)>/gi;
+  const matches = [...input.matchAll(imageRegex)];
+
+  if (!matches.length) {
+    return {
+      html: input,
+      attachments: [],
+    };
+  }
+
+  const uniqueUrls = [];
+  const seen = new Set();
+
+  for (const match of matches) {
+    const src = String(match[3] || "").trim();
+    if (!isEmbeddableImageUrl(src) || seen.has(src)) {
+      continue;
+    }
+
+    seen.add(src);
+    uniqueUrls.push(src);
+  }
+
+  if (!uniqueUrls.length) {
+    return {
+      html: input,
+      attachments: [],
+    };
+  }
+
+  const urlToEmbed = new Map();
+  for (let index = 0; index < uniqueUrls.length; index += 1) {
+    const url = uniqueUrls[index];
+    const embedded = await fetchImageForInlineEmbedding(url, index + 1);
+    if (embedded) {
+      urlToEmbed.set(url, embedded);
+    }
+  }
+
+  if (!urlToEmbed.size) {
+    return {
+      html: input,
+      attachments: [],
+    };
+  }
+
+  const rewrittenHtml = input.replace(imageRegex, (fullMatch, beforeSrc, quote, src, afterSrc) => {
+    const embed = urlToEmbed.get(String(src || "").trim());
+
+    if (!embed) {
+      return fullMatch;
+    }
+
+    return `<img${beforeSrc}src=${quote}cid:${embed.cid}${quote}${afterSrc}>`;
+  });
+
+  return {
+    html: rewrittenHtml,
+    attachments: Array.from(urlToEmbed.values()),
+  };
+};
+
+const buildRawMimeEmail = async ({
+  fromName,
+  fromEmail,
+  replyTo = "",
+  to,
+  subject,
+  text = "",
+  html = "",
+  attachments = [],
+}) => {
+  const multipartBoundary = `related_${randomUUID()}`;
+  const alternativeBoundary = `alternative_${randomUUID()}`;
+  const subjectLine = encodeMimeWord(subject || "");
+  const fromLine = `${encodeMimeWord(fromName || "")} <${fromEmail}>`;
+  const toLine = Array.isArray(to) ? to.join(", ") : String(to || "");
+
+  const mimeParts = [
+    `From: ${fromLine}`,
+    `To: ${toLine}`,
+    `Subject: ${subjectLine}`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/related; boundary="${multipartBoundary}"`,
+  ];
+
+  if (replyTo) {
+    mimeParts.splice(2, 0, `Reply-To: ${replyTo}`);
+  }
+
+  const bodyParts = [
+    `--${multipartBoundary}`,
+    `Content-Type: multipart/alternative; boundary="${alternativeBoundary}"`,
+    "",
+    `--${alternativeBoundary}`,
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(text || subject || ""),
+    "",
+    `--${alternativeBoundary}`,
+    "Content-Type: text/html; charset=UTF-8",
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(html || ""),
+    "",
+    `--${alternativeBoundary}--`,
+  ];
+
+  const attachmentParts = attachments.map((attachment) => [
+    `--${multipartBoundary}`,
+    `Content-Type: ${attachment.contentType}; name="${attachment.filename}"`,
+    "Content-Transfer-Encoding: base64",
+    `Content-Disposition: inline; filename="${attachment.filename}"`,
+    `Content-ID: <${attachment.cid}>`,
+    "",
+    wrapBinaryBase64(Buffer.from(attachment.base64, "base64")),
+    "",
+  ].join("\r\n"));
+
+  const closingParts = [
+    ...mimeParts,
+    "",
+    bodyParts.join("\r\n"),
+    ...attachmentParts,
+    `--${multipartBoundary}--`,
+    "",
+  ];
+
+  return closingParts.join("\r\n");
+};
+
 const rewriteTrackedLinks = (html, clickTrackingUrl) => {
   if (!clickTrackingUrl) {
     return html;
@@ -81,6 +344,7 @@ const rewriteTrackedLinks = (html, clickTrackingUrl) => {
     /<a\b([^>]*?)href=(["'])(.*?)\2([^>]*?)>/gi,
     (_match, before, quote, href, after) => {
       const trimmedHref = href.trim();
+      const attrs = `${before} ${after}`;
 
       if (
         !trimmedHref ||
@@ -92,7 +356,12 @@ const rewriteTrackedLinks = (html, clickTrackingUrl) => {
         return `<a${before}href=${quote}${href}${quote}${after}>`;
       }
 
-      const redirected = `${clickTrackingUrl}?url=${encodeURIComponent(trimmedHref)}`;
+      const redirected = appendTrackingParams(clickTrackingUrl, {
+        url: trimmedHref,
+        blockId: readTrackingAttribute(attrs, "data-track-block"),
+        section: readTrackingAttribute(attrs, "data-track-section"),
+        ctaType: readTrackingAttribute(attrs, "data-track-cta-type"),
+      });
       return `<a${before}href=${quote}${redirected}${quote}${after}>`;
     }
   );
@@ -150,6 +419,48 @@ const buildPersonalizedEmailPayload = ({
 
 const sendEmailCommand = async (payload) => {
   const client = getSesClient();
+  const simpleHtml = payload?.Content?.Simple?.Body?.Html?.Data || "";
+  const simpleText = payload?.Content?.Simple?.Body?.Text?.Data || "";
+
+  if (simpleHtml) {
+    const embedded = await embedInlineImagesInHtml(simpleHtml);
+    if (embedded.attachments.length) {
+      const rawMime = await buildRawMimeEmail({
+        fromName: payload?.FromEmailAddress?.split("<")[0]?.trim() || env.automationFromName || "SellersLogin",
+        fromEmail:
+          payload?.FromEmailAddress?.match(/<([^>]+)>/)?.[1]?.trim() ||
+          env.automationFromEmail ||
+          env.adminEmail ||
+          "",
+        replyTo: Array.isArray(payload?.ReplyToAddresses) ? payload.ReplyToAddresses[0] || "" : "",
+        to: payload?.Destination?.ToAddresses || [],
+        subject: payload?.Content?.Simple?.Subject?.Data || "",
+        text: simpleText || payload?.Content?.Simple?.Subject?.Data || "",
+        html: embedded.html,
+        attachments: embedded.attachments,
+      });
+
+      const response = await client.send(
+        new SendEmailCommand({
+          FromEmailAddress: payload.FromEmailAddress,
+          Destination: payload.Destination,
+          ReplyToAddresses: payload.ReplyToAddresses,
+          Content: {
+            Raw: {
+              Data: Buffer.from(rawMime, "utf8"),
+            },
+          },
+          EmailTags: payload.EmailTags,
+          ConfigurationSetName: payload.ConfigurationSetName,
+        })
+      );
+
+      return {
+        messageId: response.MessageId,
+      };
+    }
+  }
+
   const response = await client.send(new SendEmailCommand(payload));
 
   return {

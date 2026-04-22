@@ -77,6 +77,25 @@ const campaignRecipientSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    lastConvertedAt: {
+      type: Date,
+      default: null,
+    },
+    lastConversionSourceId: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    lastConversionSourceType: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    conversionCount: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     revenueAttributed: {
       type: Number,
       default: 0,
@@ -89,6 +108,8 @@ const campaignRecipientSchema = new mongoose.Schema(
 );
 
 campaignRecipientSchema.index({ campaignId: 1, email: 1 }, { unique: true });
+campaignRecipientSchema.index({ campaignId: 1, convertedAt: -1 });
+campaignRecipientSchema.index({ email: 1, convertedAt: -1 });
 
 const CampaignRecipient =
   mongoose.models.CampaignRecipient ||

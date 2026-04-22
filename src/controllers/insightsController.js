@@ -1,6 +1,7 @@
 import EmailCampaign from "../models/EmailCampaign.js";
 import EmailEvent from "../models/EmailEvent.js";
 import SuppressionEntry from "../models/SuppressionEntry.js";
+import { getAnalyticsSnapshot } from "../services/analyticsService.js";
 import { buildDateRangeMatch } from "../utils/dateRange.js";
 
 const eventCountConfig = {
@@ -414,6 +415,7 @@ const getOverviewAnalytics = async (req, res) => {
     campaignPerformance,
     unsubscribeCount,
     trendData,
+    analyticsSnapshot,
   ] = await Promise.all([
     summarizeEvents(match),
     getUniqueCounts(match),
@@ -426,6 +428,7 @@ const getOverviewAnalytics = async (req, res) => {
       ...buildDateRangeMatch(req.query.startDate, req.query.endDate),
     }),
     getTrendData(match, req.query.startDate, req.query.endDate),
+    getAnalyticsSnapshot(req.query),
   ]);
 
   return res.json({
@@ -435,11 +438,28 @@ const getOverviewAnalytics = async (req, res) => {
     uniqueOpens: uniqueCounts.uniqueOpens,
     clicks: summary.clicks,
     uniqueClicks: uniqueCounts.uniqueClicks,
+    openRate: summary.openRate,
+    clickRate: summary.clickRate,
+    ctor: analyticsSnapshot.summary.ctor,
     bounceRate: summary.bounceRate,
     complaintRate: summary.complaintRate,
     unsubscribeCount,
-    conversionCount: 0,
-    revenueGenerated: 0,
+    conversionCount: analyticsSnapshot.conversion.conversionCount,
+    uniqueConversionCount: analyticsSnapshot.conversion.uniqueConversionCount,
+    conversionRate: analyticsSnapshot.conversion.conversionRate,
+    revenueGenerated: analyticsSnapshot.conversion.revenueGenerated,
+    totalCost: analyticsSnapshot.conversion.totalCost,
+    roiPercent: analyticsSnapshot.conversion.roiPercent,
+    profit: analyticsSnapshot.conversion.profit,
+    averageOrderValue: analyticsSnapshot.conversion.averageOrderValue,
+    attributedConversions: analyticsSnapshot.conversion.attributedConversions,
+    attributedRevenue: analyticsSnapshot.conversion.attributedRevenue,
+    commerceOrders: analyticsSnapshot.conversion.commerceOrders,
+    commerceRevenue: analyticsSnapshot.conversion.commerceRevenue,
+    listGrowth: analyticsSnapshot.listGrowth,
+    deviceBreakdown: analyticsSnapshot.deviceBreakdown,
+    locationBreakdown: analyticsSnapshot.locationBreakdown,
+    timeBasedAnalytics: analyticsSnapshot.timeBasedAnalytics,
     sendingHealth: buildSenderHealth(summary),
     topCampaign: campaignPerformance.topCampaign,
     worstCampaign: campaignPerformance.worstCampaign,
@@ -451,8 +471,8 @@ const getOverviewAnalytics = async (req, res) => {
 };
 
 const getAnalyticsSummary = async (req, res) => {
-  const match = buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp");
-  const summary = await summarizeEvents(match);
+  const analyticsSnapshot = await getAnalyticsSnapshot(req.query);
+  const summary = analyticsSnapshot.summary;
 
   const campaignsCount = await EmailCampaign.countDocuments();
   const suppressionsCount = await SuppressionEntry.countDocuments(
@@ -463,6 +483,22 @@ const getAnalyticsSummary = async (req, res) => {
     ...summary,
     campaignsCount,
     suppressionsCount,
+    conversionCount: analyticsSnapshot.conversion.conversionCount,
+    uniqueConversionCount: analyticsSnapshot.conversion.uniqueConversionCount,
+    conversionRate: analyticsSnapshot.conversion.conversionRate,
+    revenueGenerated: analyticsSnapshot.conversion.revenueGenerated,
+    totalCost: analyticsSnapshot.conversion.totalCost,
+    roiPercent: analyticsSnapshot.conversion.roiPercent,
+    profit: analyticsSnapshot.conversion.profit,
+    averageOrderValue: analyticsSnapshot.conversion.averageOrderValue,
+    attributedConversions: analyticsSnapshot.conversion.attributedConversions,
+    attributedRevenue: analyticsSnapshot.conversion.attributedRevenue,
+    commerceOrders: analyticsSnapshot.conversion.commerceOrders,
+    commerceRevenue: analyticsSnapshot.conversion.commerceRevenue,
+    listGrowth: analyticsSnapshot.listGrowth,
+    deviceBreakdown: analyticsSnapshot.deviceBreakdown,
+    locationBreakdown: analyticsSnapshot.locationBreakdown,
+    timeBasedAnalytics: analyticsSnapshot.timeBasedAnalytics,
   });
 };
 

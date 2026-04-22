@@ -102,6 +102,8 @@ const normalizeCampaignPayload = (payload) => {
     recurrenceInterval: normalizeRecurrenceInterval(payload.recurrenceInterval),
     recurrenceUnit: normalizeRecurrenceUnit(payload.recurrenceUnit),
     recurrenceMaxRuns: Number(payload.recurrenceMaxRuns || 0),
+    estimatedCost:
+      payload.estimatedCost === undefined ? undefined : Number(payload.estimatedCost || 0),
     sentAt: payload.sentAt || null,
   };
 };
@@ -237,6 +239,7 @@ const duplicateCampaign = async (req, res) => {
       scheduledAt: null,
       sentAt: null,
       totalRecipients: 0,
+      estimatedCost: Number(existingCampaign.estimatedCost || 0),
       totals: {
         sent: 0,
         delivered: 0,

@@ -2,6 +2,7 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { protectAdmin } from "../middleware/authMiddleware.js";
+import { env } from "../config/env.js";
 
 const router = express.Router();
 
@@ -64,8 +65,16 @@ router.post("/image", (req, res) => {
 
     fs.writeFileSync(filePath, buffer);
 
+    const requestBaseUrl = `${req.protocol}://${req.get("host")}`.replace(/\/+$/g, "");
+    const baseUrl = String(env.publicAppUrl || "")
+      .trim()
+      .replace(/\/+$/g, "");
+    const shouldUseRequestHost =
+      /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(requestBaseUrl);
+    const publicBaseUrl = shouldUseRequestHost ? requestBaseUrl : (baseUrl || requestBaseUrl);
+
     return res.status(201).json({
-      url: `${req.protocol}://${req.get("host")}/uploads/${fileName}`,
+      url: `${publicBaseUrl}/uploads/${fileName}`,
       mimeType: parsed.mimeType,
       fileName,
     });

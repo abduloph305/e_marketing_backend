@@ -9,7 +9,7 @@ import {
 
 const subscriberStatusMap = {
   bounce: "bounced",
-  complaint: "complained",
+  complaint: "blocked",
   reject: "suppressed",
   unsubscribe: "unsubscribed",
 };
@@ -25,6 +25,36 @@ const singularEventTypes = new Set([
   "unsubscribe",
 ]);
 
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+
+const getDayAge = (timestamp, referenceDate = new Date()) => {
+  if (!timestamp) {
+    return null;
+  }
+
+  const value = new Date(timestamp);
+  const difference = referenceDate.getTime() - value.getTime();
+
+  if (Number.isNaN(value.getTime()) || difference < 0) {
+    return 0;
+  }
+
+  return Math.floor(difference / DAY_IN_MS);
+};
+
+const recencyBonus = (ageDays, weights) => {
+  if (ageDays === null) {
+    return 0;
+  }
+
+  const [fresh, warm, cool, stale] = weights;
+
+  if (ageDays <= 7) return fresh;
+  if (ageDays <= 30) return warm;
+  if (ageDays <= 90) return cool;
+  return stale;
+};
+
 const shouldCreateSuppression = ({ eventType, bounceType }) =>
   eventType === "complaint" || (eventType === "bounce" && bounceType === "Permanent");
 
@@ -36,13 +66,27 @@ const resolveSuppressionReason = (eventType) => {
   return "manual";
 };
 
-const recalculateEngagementScore = (subscriber = {}) =>
-  Math.round(
-    Number(subscriber.totalOrders || 0) * 18 +
-      Number(subscriber.totalSpent || 0) * 0.08 +
-      (subscriber.lastOpenAt ? 8 : 0) +
-      (subscriber.lastClickAt ? 16 : 0)
-  );
+const recalculateEngagementScore = (subscriber = {}, referenceDate = new Date()) => {
+  const lastActivityAge = getDayAge(subscriber.lastActivityAt, referenceDate);
+  const lastOpenAge = getDayAge(subscriber.lastOpenAt, referenceDate);
+  const lastClickAge = getDayAge(subscriber.lastClickAt, referenceDate);
+  const lastOrderAge = getDayAge(subscriber.lastOrderDate, referenceDate);
+
+  const commerceScore =
+    Number(subscriber.totalOrders || 0) * 18 + Number(subscriber.totalSpent || 0) * 0.08;
+
+  const engagementScore =
+    commerceScore +
+    recencyBonus(lastOpenAge, [14, 10, 5, 0]) +
+    recencyBonus(lastClickAge, [22, 14, 7, 0]) +
+    recencyBonus(lastActivityAge, [8, 5, 2, 0]) +
+    recencyBonus(lastOrderAge, [12, 8, 4, 0]) -
+    (lastActivityAge !== null && lastActivityAge > 30 ? Math.min(20, Math.floor((lastActivityAge - 30) / 10) * 2) : 0) -
+    (subscriber.status === "unsubscribed" ? 20 : 0) -
+    (subscriber.status === "blocked" || subscriber.status === "complained" ? 35 : 0);
+
+  return Math.min(100, Math.max(0, Math.round(engagementScore)));
+};
 
 const updateSubscriberActivity = async (recipientEmail, eventType, timestamp) => {
   const subscriber = await Subscriber.findOne({ email: recipientEmail }).lean();
@@ -73,7 +117,7 @@ const updateSubscriberActivity = async (recipientEmail, eventType, timestamp) =>
       ...nextState,
     };
 
-    nextState.engagementScore = recalculateEngagementScore(merged);
+    nextState.engagementScore = recalculateEngagementScore(merged, timestamp);
   }
 
   await Subscriber.findByIdAndUpdate(subscriber._id, {
@@ -93,6 +137,9 @@ const storeEmailEvent = async ({
   bounceSubType = "",
   complaintFeedbackType = "",
   clickedLink = "",
+  blockId = "",
+  section = "",
+  ctaType = "",
   ipAddress = "",
   userAgent = "",
   deviceType = "",
@@ -123,6 +170,9 @@ const storeEmailEvent = async ({
       bounceSubType,
       complaintFeedbackType,
       clickedLink,
+      blockId,
+      section,
+      ctaType,
       ipAddress,
       userAgent,
       deviceType,
@@ -138,13 +188,29 @@ const storeEmailEvent = async ({
       timestamp,
     });
 
+    const currentSubscriber = await Subscriber.findOne({ email: recipientEmail }).select(
+      "status blockedReason blockedAt"
+    );
+
     const subscriberStatus = subscriberStatusMap[eventType];
-    if (subscriberStatus) {
-      await Subscriber.findOneAndUpdate(
-        { email: recipientEmail },
-        { status: subscriberStatus },
-        { returnDocument: "after" }
-      );
+    if (subscriberStatus && currentSubscriber) {
+      if (currentSubscriber.status === "blocked" && subscriberStatus !== "blocked") {
+        // Keep spam or manually blocked contacts locked out of sends.
+      } else {
+        const nextSubscriberUpdate = { status: subscriberStatus };
+
+        if (subscriberStatus === "blocked") {
+          nextSubscriberUpdate.blockedReason = "spam";
+          nextSubscriberUpdate.blockedAt = timestamp;
+        } else {
+          nextSubscriberUpdate.blockedReason = "";
+          nextSubscriberUpdate.blockedAt = null;
+        }
+
+        await Subscriber.findByIdAndUpdate(currentSubscriber._id, nextSubscriberUpdate, {
+          returnDocument: "after",
+        });
+      }
     }
 
     if (["send", "delivery", "open", "click"].includes(eventType)) {

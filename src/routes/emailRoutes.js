@@ -17,9 +17,11 @@ import {
 import { protectAdmin } from "../middleware/authMiddleware.js";
 import {
   createSuppression,
+  blockSubscriber,
   listSuppressions,
   suppressSubscriber,
   unsubscribeSubscriber,
+  unblockSubscriber,
   unsuppressEntry,
 } from "../controllers/suppressionController.js";
 
@@ -40,6 +42,8 @@ router.post("/suppressions", createSuppression);
 router.post("/suppressions/:id/unsuppress", unsuppressEntry);
 router.post("/subscribers/:id/unsubscribe", unsubscribeSubscriber);
 router.post("/subscribers/:id/suppress", suppressSubscriber);
+router.post("/subscribers/:id/block", blockSubscriber);
+router.post("/subscribers/:id/unblock", unblockSubscriber);
 router.post("/test-send", sendAdHocTestEmail);
 router.post("/campaigns/:id/send-test", sendTestEmail);
 router.post("/campaigns/:id/send", sendCampaign);

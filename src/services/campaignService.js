@@ -84,7 +84,16 @@ const updateCampaignRecipientStatus = async ({
 
 const updateCampaignCounters = async (campaignId) => {
   const campaignObjectId = new mongoose.Types.ObjectId(String(campaignId));
-  const [eventSummary, totalRecipients, uniqueOpens, uniqueClicks, unsubscribes, conversions, revenue] =
+  const [
+    eventSummary,
+    totalRecipients,
+    uniqueOpens,
+    uniqueClicks,
+    unsubscribes,
+    conversionCounts,
+    convertedRecipients,
+    revenue,
+  ] =
     await Promise.all([
       EmailEvent.aggregate([
         { $match: { campaignId: campaignObjectId } },
@@ -99,6 +108,15 @@ const updateCampaignCounters = async (campaignId) => {
       CampaignRecipient.countDocuments({ campaignId, openedAt: { $ne: null } }),
       CampaignRecipient.countDocuments({ campaignId, clickedAt: { $ne: null } }),
       CampaignRecipient.countDocuments({ campaignId, unsubscribedAt: { $ne: null } }),
+      CampaignRecipient.aggregate([
+        { $match: { campaignId: campaignObjectId } },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: { $ifNull: ["$conversionCount", 0] } },
+          },
+        },
+      ]),
       CampaignRecipient.countDocuments({ campaignId, convertedAt: { $ne: null } }),
       CampaignRecipient.aggregate([
         { $match: { campaignId: campaignObjectId } },
@@ -121,7 +139,7 @@ const updateCampaignCounters = async (campaignId) => {
     bounces: 0,
     complaints: 0,
     unsubscribes: unsubscribes || 0,
-    conversions: conversions || 0,
+    conversions: conversionCounts[0]?.total || convertedRecipients || 0,
     revenue: revenue[0]?.total || 0,
   };
 
@@ -145,6 +163,96 @@ const updateCampaignCounters = async (campaignId) => {
   );
 };
 
+const findAttributionRecipient = async ({ campaignId = null, email = "", messageId = null }) => {
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+
+  if (messageId) {
+    const recipientByMessageId = await CampaignRecipient.findOne({ messageId }).lean();
+    if (recipientByMessageId) {
+      return recipientByMessageId;
+    }
+  }
+
+  if (campaignId && normalizedEmail) {
+    const recipientByCampaign = await CampaignRecipient.findOne({
+      campaignId,
+      email: normalizedEmail,
+    }).lean();
+
+    if (recipientByCampaign) {
+      return recipientByCampaign;
+    }
+  }
+
+  if (!normalizedEmail) {
+    return null;
+  }
+
+  return CampaignRecipient.findOne({ email: normalizedEmail })
+    .sort({
+      clickedAt: -1,
+      openedAt: -1,
+      sentAt: -1,
+      convertedAt: -1,
+      updatedAt: -1,
+    })
+    .lean();
+};
+
+const attributeCampaignConversion = async ({
+  campaignId = null,
+  email = "",
+  messageId = null,
+  convertedAt = new Date(),
+  revenueAttributed = 0,
+  sourceEventId = "",
+  sourceEventType = "",
+}) => {
+  const recipient = await findAttributionRecipient({ campaignId, email, messageId });
+
+  if (!recipient) {
+    return null;
+  }
+
+  const resolvedEmail = String(email || recipient.email || "").trim().toLowerCase() || recipient.email;
+  const nextRevenue = Math.max(0, Number(revenueAttributed || 0));
+  const normalizedSourceId = String(sourceEventId || "").trim();
+  const normalizedSourceType = String(sourceEventType || "").trim();
+
+  if (
+    normalizedSourceId &&
+    String(recipient.lastConversionSourceId || "") === normalizedSourceId
+  ) {
+    return recipient;
+  }
+
+  const updatedRecipient = await CampaignRecipient.findByIdAndUpdate(
+    recipient._id,
+    {
+      $set: {
+        status: "converted",
+        convertedAt: recipient.convertedAt || convertedAt,
+        lastConvertedAt: convertedAt,
+        lastConversionSourceId: normalizedSourceId || recipient.lastConversionSourceId || "",
+        lastConversionSourceType: normalizedSourceType || recipient.lastConversionSourceType || "",
+        campaignId: campaignId || recipient.campaignId || null,
+        email: resolvedEmail,
+      },
+      $inc: {
+        conversionCount: 1,
+        revenueAttributed: nextRevenue,
+      },
+    },
+    { returnDocument: "after", runValidators: true }
+  );
+
+  if (updatedRecipient?.campaignId) {
+    await updateCampaignCounters(updatedRecipient.campaignId);
+  }
+
+  return updatedRecipient;
+};
+
 const buildCampaignDetailPayload = async (campaignId) => {
   const campaign = await EmailCampaign.findById(campaignId)
     .populate({ path: "templateId", select: "name subject previewText" })
@@ -156,17 +264,19 @@ const buildCampaignDetailPayload = async (campaignId) => {
 
   const campaignObjectId = new mongoose.Types.ObjectId(String(campaign._id));
 
-  const [activityTimeline, recipientProgress, recentEvents, topLinks, trendRows] = await Promise.all([
+  const [activityTimeline, recipientProgress, recentEvents, topLinks, clickMapRows, trendRows] = await Promise.all([
     CampaignActivityLog.find({ campaignId }).sort({ createdAt: -1 }).limit(20).lean(),
     CampaignRecipient.find({ campaignId })
       .sort({ updatedAt: -1 })
       .limit(20)
-      .select("email status sentAt deliveredAt openedAt clickedAt bouncedAt complainedAt unsubscribedAt convertedAt revenueAttributed")
+      .select(
+        "email status sentAt deliveredAt openedAt clickedAt bouncedAt complainedAt unsubscribedAt convertedAt lastConvertedAt lastConversionSourceId lastConversionSourceType conversionCount revenueAttributed"
+      )
       .lean(),
     EmailEvent.find({ campaignId })
       .sort({ timestamp: -1 })
       .limit(12)
-      .select("recipientEmail eventType timestamp clickedLink bounceType complaintFeedbackType deviceType ipAddress")
+      .select("recipientEmail eventType timestamp clickedLink blockId section ctaType bounceType complaintFeedbackType deviceType ipAddress")
       .lean(),
     EmailEvent.aggregate([
       { $match: { campaignId: campaignObjectId, eventType: "click", clickedLink: { $ne: "" } } },
@@ -178,6 +288,43 @@ const buildCampaignDetailPayload = async (campaignId) => {
       },
       { $sort: { totalClicks: -1 } },
       { $limit: 5 },
+    ]),
+    EmailEvent.aggregate([
+      {
+        $match: {
+          campaignId: campaignObjectId,
+          eventType: "click",
+        },
+      },
+      {
+        $group: {
+          _id: {
+            section: {
+              $cond: [
+                { $and: [{ $ne: ["$section", ""] }, { $ne: ["$section", null] }] },
+                "$section",
+                {
+                  $switch: {
+                    branches: [
+                      { case: { $eq: ["$ctaType", "button"] }, then: "CTA button" },
+                      { case: { $eq: ["$ctaType", "image"] }, then: "Image block" },
+                      { case: { $eq: ["$ctaType", "video"] }, then: "Video block" },
+                      { case: { $eq: ["$ctaType", "logo"] }, then: "Brand logo" },
+                      { case: { $eq: ["$ctaType", "navigation"] }, then: "Navigation links" },
+                      { case: { $eq: ["$ctaType", "social"] }, then: "Social links" },
+                    ],
+                    default: "Other links",
+                  },
+                },
+              ],
+            },
+            blockId: "$blockId",
+          },
+          totalClicks: { $sum: 1 },
+          recipients: { $addToSet: "$recipientEmail" },
+        },
+      },
+      { $sort: { totalClicks: -1 } },
     ]),
     EmailEvent.aggregate([
       { $match: { campaignId: campaignObjectId, eventType: { $in: ["send", "delivery", "open", "click"] } } },
@@ -230,11 +377,21 @@ const buildCampaignDetailPayload = async (campaignId) => {
     recentEvents,
     topLinks: topLinks.map((item) => ({ url: item._id, totalClicks: item.totalClicks })),
     trendData: [...trendMap.values()],
+    clickMap: clickMapRows
+      .map((item) => ({
+        section: item._id.section || "Other links",
+        blockId: item._id.blockId || "",
+        totalClicks: item.totalClicks || 0,
+        uniqueRecipients: item.recipients?.length || 0,
+      }))
+      .sort((left, right) => right.totalClicks - left.totalClicks)
+      .slice(0, 8),
   };
 };
 
 export {
   buildCampaignDetailPayload,
+  attributeCampaignConversion,
   logCampaignActivity,
   updateCampaignCounters,
   updateCampaignRecipientStatus,

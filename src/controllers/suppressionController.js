@@ -4,6 +4,9 @@ import { buildDateRangeMatch } from "../utils/dateRange.js";
 
 const normalizeEmail = (email = "") => email.trim().toLowerCase();
 
+const isSpamBlocked = (subscriber) =>
+  subscriber?.status === "blocked" && subscriber?.blockedReason === "spam";
+
 const listSuppressions = async (req, res) => {
   const page = Math.max(Number(req.query.page) || 1, 1);
   const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
@@ -59,6 +62,16 @@ const createSuppression = async (req, res) => {
     return res.status(400).json({ message: "Email is required" });
   }
 
+  const existingSubscriber = await Subscriber.findOne({ email }).select(
+    "status blockedReason",
+  );
+
+  if (isSpamBlocked(existingSubscriber)) {
+    return res
+      .status(403)
+      .json({ message: "Spam-blocked subscribers cannot be changed manually" });
+  }
+
   const subscriber = await Subscriber.findOneAndUpdate(
     { email },
     { status: "suppressed" },
@@ -93,12 +106,28 @@ const unsuppressEntry = async (req, res) => {
     return res.status(404).json({ message: "Suppression entry not found" });
   }
 
+  if (suppression.reason === "complaint") {
+    return res
+      .status(403)
+      .json({ message: "Spam complaint entries cannot be released manually" });
+  }
+
+  const subscriber = await Subscriber.findOne({ email: suppression.email }).select(
+    "status blockedReason",
+  );
+
+  if (isSpamBlocked(subscriber)) {
+    return res
+      .status(403)
+      .json({ message: "Spam-blocked subscribers cannot be unblocked manually" });
+  }
+
   suppression.status = "released";
   await suppression.save();
 
   await Subscriber.findOneAndUpdate(
     { email: suppression.email },
-    { status: "subscribed" },
+    { status: "subscribed", blockedReason: "", blockedAt: null },
     { returnDocument: "after" }
   );
 
@@ -106,15 +135,23 @@ const unsuppressEntry = async (req, res) => {
 };
 
 const unsubscribeSubscriber = async (req, res) => {
-  const subscriber = await Subscriber.findByIdAndUpdate(
-    req.params.id,
-    { status: "unsubscribed" },
-    { returnDocument: "after" }
-  );
+  const subscriber = await Subscriber.findById(req.params.id);
 
   if (!subscriber) {
     return res.status(404).json({ message: "Subscriber not found" });
   }
+
+  if (isSpamBlocked(subscriber)) {
+    return res
+      .status(403)
+      .json({ message: "Spam-blocked subscribers cannot be changed manually" });
+  }
+
+  const updatedSubscriber = await Subscriber.findByIdAndUpdate(
+    req.params.id,
+    { status: "unsubscribed", blockedReason: "", blockedAt: null },
+    { returnDocument: "after" }
+  );
 
   const suppression = await SuppressionEntry.findOneAndUpdate(
     { email: subscriber.email },
@@ -128,7 +165,11 @@ const unsubscribeSubscriber = async (req, res) => {
     { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }
   );
 
-  return res.json({ message: "Subscriber unsubscribed", subscriber, suppression });
+  return res.json({
+    message: "Subscriber unsubscribed",
+    subscriber: updatedSubscriber,
+    suppression,
+  });
 };
 
 const suppressSubscriber = async (req, res) => {
@@ -136,6 +177,12 @@ const suppressSubscriber = async (req, res) => {
 
   if (!subscriber) {
     return res.status(404).json({ message: "Subscriber not found" });
+  }
+
+  if (isSpamBlocked(subscriber)) {
+    return res
+      .status(403)
+      .json({ message: "Spam-blocked subscribers cannot be changed manually" });
   }
 
   const suppression = await SuppressionEntry.findOneAndUpdate(
@@ -152,15 +199,89 @@ const suppressSubscriber = async (req, res) => {
   );
 
   subscriber.status = "suppressed";
+  subscriber.blockedReason = "";
+  subscriber.blockedAt = null;
   await subscriber.save();
 
   return res.json({ message: "Subscriber suppressed", subscriber, suppression });
 };
 
+const blockSubscriber = async (req, res) => {
+  const subscriber = await Subscriber.findById(req.params.id);
+
+  if (!subscriber) {
+    return res.status(404).json({ message: "Subscriber not found" });
+  }
+
+  if (isSpamBlocked(subscriber)) {
+    return res
+      .status(403)
+      .json({ message: "Spam-blocked subscribers cannot be changed manually" });
+  }
+
+  const blockedSubscriber = await Subscriber.findByIdAndUpdate(
+    req.params.id,
+    {
+      status: "blocked",
+      blockedReason: "manual",
+      blockedAt: new Date(),
+    },
+    { returnDocument: "after", runValidators: true }
+  );
+
+  const suppression = await SuppressionEntry.findOneAndUpdate(
+    { email: subscriber.email },
+    {
+      email: subscriber.email,
+      reason: "manual",
+      source: "admin",
+      status: "active",
+      relatedSubscriberId: subscriber._id,
+    },
+    { upsert: true, returnDocument: "after", setDefaultsOnInsert: true, runValidators: true }
+  );
+
+  return res.json({ message: "Subscriber blocked", subscriber: blockedSubscriber, suppression });
+};
+
+const unblockSubscriber = async (req, res) => {
+  const subscriber = await Subscriber.findById(req.params.id);
+
+  if (!subscriber) {
+    return res.status(404).json({ message: "Subscriber not found" });
+  }
+
+  if (subscriber.status !== "blocked") {
+    return res.status(400).json({ message: "Subscriber is not blocked" });
+  }
+
+  if (subscriber.blockedReason === "spam") {
+    return res
+      .status(403)
+      .json({ message: "Spam-blocked subscribers cannot be unblocked manually" });
+  }
+
+  const unblockedSubscriber = await Subscriber.findByIdAndUpdate(
+    req.params.id,
+    {
+      status: "subscribed",
+      blockedReason: "",
+      blockedAt: null,
+    },
+    { returnDocument: "after", runValidators: true }
+  );
+
+  await SuppressionEntry.deleteMany({ email: subscriber.email });
+
+  return res.json({ message: "Subscriber unblocked", subscriber: unblockedSubscriber });
+};
+
 export {
+  blockSubscriber,
   createSuppression,
   listSuppressions,
   suppressSubscriber,
   unsubscribeSubscriber,
   unsuppressEntry,
+  unblockSubscriber,
 };

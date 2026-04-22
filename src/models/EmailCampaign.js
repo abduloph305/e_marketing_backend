@@ -138,6 +138,11 @@ const emailCampaignSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    estimatedCost: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     totals: {
       type: totalsSchema,
       default: () => ({}),

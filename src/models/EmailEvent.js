@@ -74,6 +74,21 @@ const emailEventSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    blockId: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    section: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    ctaType: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     ipAddress: {
       type: String,
       default: "",
@@ -103,6 +118,12 @@ emailEventSchema.index(
   { messageId: 1, recipientEmail: 1, eventType: 1, timestamp: 1 },
   { unique: true }
 );
+emailEventSchema.index({ eventType: 1, timestamp: -1 });
+emailEventSchema.index({ subscriberId: 1, eventType: 1, timestamp: -1 });
+emailEventSchema.index({ recipientEmail: 1, eventType: 1, timestamp: -1 });
+emailEventSchema.index({ deviceType: 1, timestamp: -1 });
+emailEventSchema.index({ section: 1, timestamp: -1 });
+emailEventSchema.index({ blockId: 1, timestamp: -1 });
 
 const EmailEvent =
   mongoose.models.EmailEvent || mongoose.model("EmailEvent", emailEventSchema);

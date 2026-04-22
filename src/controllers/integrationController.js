@@ -2,6 +2,7 @@ import IntegrationEvent from "../models/IntegrationEvent.js";
 import Subscriber from "../models/Subscriber.js";
 import { env } from "../config/env.js";
 import { triggerWorkflowExecutionsForTriggers } from "../services/automationService.js";
+import { attributeCampaignConversion } from "../services/campaignService.js";
 
 const eventTriggerMap = {
   "user.registered": ["welcome_signup", "welcome_series"],
@@ -541,6 +542,18 @@ const ingestOphmateEvent = async (req, res) => {
     const subscriber = await upsertSubscriberFromEvent(payload);
     const storedEvent = await createIntegrationEvent(payload, subscriber?._id, "received");
 
+    let conversionResult = null;
+    if (["order.completed", "payment.success"].includes(payload.eventType)) {
+      conversionResult = await attributeCampaignConversion({
+        campaignId: null,
+        email: payload.email,
+        convertedAt: payload.timestamp ? new Date(payload.timestamp) : new Date(),
+        revenueAttributed: Number(payload.amount || payload.totalSpent || 0),
+        sourceEventId: payload.sourceEventId || payload.eventId || payload.orderId || "",
+        sourceEventType: payload.eventType,
+      });
+    }
+
     const triggers = eventTriggerMap[payload.eventType];
     let workflowResults = [];
 
@@ -580,6 +593,7 @@ const ingestOphmateEvent = async (req, res) => {
       eventType: payload.eventType,
       trigger: triggers || null,
       workflowCount: workflowResults.length,
+      conversionAttributed: Boolean(conversionResult),
     });
   } catch (error) {
     try {

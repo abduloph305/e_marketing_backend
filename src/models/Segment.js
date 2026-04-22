@@ -1,27 +1,5 @@
 import mongoose from "mongoose";
 
-const segmentRuleSchema = new mongoose.Schema(
-  {
-    field: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    operator: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-    value: {
-      type: mongoose.Schema.Types.Mixed,
-      default: null,
-    },
-  },
-  {
-    _id: false,
-  }
-);
-
 const segmentSchema = new mongoose.Schema(
   {
     name: {
@@ -35,8 +13,12 @@ const segmentSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    definition: {
+      type: mongoose.Schema.Types.Mixed,
+      default: { logic: "and", filters: [] },
+    },
     rules: {
-      type: [segmentRuleSchema],
+      type: [mongoose.Schema.Types.Mixed],
       default: [],
     },
   },

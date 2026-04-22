@@ -7,7 +7,7 @@ import { storeEmailEvent } from "../services/emailEventService.js";
 
 const campaignPopulate = [
   { path: "templateId" },
-  { path: "segmentId", select: "name rules" },
+  { path: "segmentId", select: "name definition rules" },
 ];
 
 const parseEmailList = (value) =>

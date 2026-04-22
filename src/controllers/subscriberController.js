@@ -340,6 +340,7 @@ const getSubscriberSummary = async (_req, res) => {
       riskCount:
         (byStatus.unsubscribed || 0) +
         (byStatus.bounced || 0) +
+        (byStatus.blocked || 0) +
         (byStatus.complained || 0) +
         (byStatus.suppressed || 0),
     });
@@ -456,18 +457,47 @@ const createSubscriber = async (req, res) => {
 
 const updateSubscriber = async (req, res) => {
   try {
+    const existingSubscriber = await Subscriber.findById(req.params.id).lean();
+
+    if (!existingSubscriber) {
+      return res.status(404).json({ message: "Subscriber not found" });
+    }
+
+    if (
+      existingSubscriber.status === "blocked" &&
+      existingSubscriber.blockedReason === "spam" &&
+      req.body?.status &&
+      req.body.status !== "blocked"
+    ) {
+      return res.status(403).json({
+        message: "Spam-blocked subscribers cannot be unblocked manually",
+      });
+    }
+
+    const nextPayload = normalizeSubscriberPayload(req.body);
+
+    if (nextPayload.status === "blocked") {
+      nextPayload.blockedReason =
+        existingSubscriber.status === "blocked"
+          ? existingSubscriber.blockedReason || "manual"
+          : req.body?.blockedReason || "manual";
+      nextPayload.blockedAt =
+        existingSubscriber.status === "blocked"
+          ? existingSubscriber.blockedAt || new Date()
+          : new Date();
+    } else if (existingSubscriber.status === "blocked") {
+      nextPayload.blockedReason = "";
+      nextPayload.blockedAt = null;
+    }
+
     const subscriber = await Subscriber.findByIdAndUpdate(
       req.params.id,
-      normalizeSubscriberPayload(req.body),
+      nextPayload,
       {
         returnDocument: "after",
         runValidators: true,
       },
     );
-
-    if (!subscriber) {
-      return res.status(404).json({ message: "Subscriber not found" });
-    }
 
     return res.json(subscriber);
   } catch (error) {
@@ -522,14 +552,17 @@ const bulkUnsubscribeSubscribers = async (req, res) => {
   }
 
   const subscribers = await Subscriber.find({ _id: { $in: subscriberIds } });
+  const eligibleSubscribers = subscribers.filter(
+    (subscriber) => !(subscriber.status === "blocked" && subscriber.blockedReason === "spam"),
+  );
 
   await Subscriber.updateMany(
-    { _id: { $in: subscriberIds } },
-    { status: "unsubscribed" },
+    { _id: { $in: eligibleSubscribers.map((subscriber) => subscriber._id) } },
+    { status: "unsubscribed", blockedReason: "", blockedAt: null },
   );
 
   await Promise.all(
-    subscribers.map((subscriber) =>
+    eligibleSubscribers.map((subscriber) =>
       SuppressionEntry.findOneAndUpdate(
         { email: subscriber.email },
         {
@@ -544,7 +577,8 @@ const bulkUnsubscribeSubscribers = async (req, res) => {
 
   return res.json({
     message: "Subscribers unsubscribed",
-    updatedCount: subscriberIds.length,
+    updatedCount: eligibleSubscribers.length,
+    skippedCount: subscriberIds.length - eligibleSubscribers.length,
   });
 };
 
@@ -556,14 +590,17 @@ const bulkSuppressSubscribers = async (req, res) => {
   }
 
   const subscribers = await Subscriber.find({ _id: { $in: subscriberIds } });
+  const eligibleSubscribers = subscribers.filter(
+    (subscriber) => !(subscriber.status === "blocked" && subscriber.blockedReason === "spam"),
+  );
 
   await Subscriber.updateMany(
-    { _id: { $in: subscriberIds } },
-    { status: "suppressed" },
+    { _id: { $in: eligibleSubscribers.map((subscriber) => subscriber._id) } },
+    { status: "suppressed", blockedReason: "", blockedAt: null },
   );
 
   await Promise.all(
-    subscribers.map((subscriber) =>
+    eligibleSubscribers.map((subscriber) =>
       SuppressionEntry.findOneAndUpdate(
         { email: subscriber.email },
         {
@@ -578,7 +615,8 @@ const bulkSuppressSubscribers = async (req, res) => {
 
   return res.json({
     message: "Subscribers suppressed",
-    updatedCount: subscriberIds.length,
+    updatedCount: eligibleSubscribers.length,
+    skippedCount: subscriberIds.length - eligibleSubscribers.length,
   });
 };
 
@@ -590,11 +628,14 @@ const bulkReactivateSubscribers = async (req, res) => {
   }
 
   const subscribers = await Subscriber.find({ _id: { $in: subscriberIds } });
-  const emails = subscribers.map((subscriber) => subscriber.email);
+  const eligibleSubscribers = subscribers.filter(
+    (subscriber) => !(subscriber.status === "blocked" && subscriber.blockedReason === "spam"),
+  );
+  const emails = eligibleSubscribers.map((subscriber) => subscriber.email);
 
   await Subscriber.updateMany(
-    { _id: { $in: subscriberIds } },
-    { status: "subscribed" },
+    { _id: { $in: eligibleSubscribers.map((subscriber) => subscriber._id) } },
+    { status: "subscribed", blockedReason: "", blockedAt: null },
   );
 
   if (emails.length) {
@@ -603,7 +644,8 @@ const bulkReactivateSubscribers = async (req, res) => {
 
   return res.json({
     message: "Subscribers reactivated",
-    updatedCount: subscriberIds.length,
+    updatedCount: eligibleSubscribers.length,
+    skippedCount: subscriberIds.length - eligibleSubscribers.length,
   });
 };
 
