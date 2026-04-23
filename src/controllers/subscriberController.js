@@ -272,7 +272,24 @@ const buildDetailPayload = async (subscriber) => {
 
 const runBestEffortCleanup = async () => {
   try {
-    await syncWebsiteAudience();
+    console.log("[audience] refresh started");
+    const result = await syncWebsiteAudience();
+
+    const normalizedComplaints = await Subscriber.updateMany(
+      { status: "complained" },
+      {
+        status: "blocked",
+        blockedReason: "spam",
+        blockedAt: new Date(),
+      },
+    );
+
+    console.log("[audience] refresh completed", {
+      mainWebsite: result.mainWebsite?.users || 0,
+      vendorWebsite: result.vendorWebsite?.users || 0,
+      deletedCount: result.deletedCount || 0,
+      complaintToBlockedCount: normalizedComplaints.modifiedCount || 0,
+    });
   } catch (error) {
     console.warn("Audience sync skipped", error?.message || error);
   }

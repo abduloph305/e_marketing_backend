@@ -4,6 +4,7 @@ import {
   sendCampaign,
   sendTestEmail,
 } from "../controllers/emailController.js";
+import { getWebhookEventDebug } from "../controllers/emailEventController.js";
 import {
   getOverviewAnalytics,
   getAnalyticsSummary,
@@ -36,6 +37,7 @@ router.get("/deliverability/breakdown", getBounceComplaintBreakdown);
 router.get("/deliverability/campaigns", getCampaignDeliverability);
 router.get("/deliverability/sender-health", getSenderHealthSummary);
 router.get("/events/recent", getRecentEvents);
+router.get("/webhook-events", getWebhookEventDebug);
 router.get("/campaigns/top", getTopCampaigns);
 router.get("/suppressions", listSuppressions);
 router.post("/suppressions", createSuppression);

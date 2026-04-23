@@ -5,6 +5,9 @@ import seedAdmin from "./src/scripts/seedAdmin.js";
 import { processDueScheduledCampaigns } from "./src/services/campaignDispatchService.js";
 import { processDueAutomationExecutions } from "./src/services/automationService.js";
 
+const CAMPAIGN_SCHEDULER_INTERVAL_MS = 15 * 1000;
+const AUTOMATION_SCHEDULER_INTERVAL_MS = 60 * 1000;
+
 const startServer = async () => {
   await connectDatabase();
   await seedAdmin();
@@ -13,20 +16,37 @@ const startServer = async () => {
     console.log(`Server running on port ${env.port}`);
   });
 
+  let campaignSchedulerRunning = false;
+
   const runScheduledCampaigns = async () => {
+    if (campaignSchedulerRunning) {
+      console.log("[scheduler:campaigns] previous run still in progress, skipping tick");
+      return;
+    }
+
+    campaignSchedulerRunning = true;
+
     try {
+      console.log("[scheduler:campaigns] checking for due campaigns");
       const results = await processDueScheduledCampaigns();
 
       if (results.length) {
-        console.log(`Processed ${results.length} scheduled campaign(s)`);
+        console.log(`[scheduler:campaigns] processed ${results.length} due campaign(s)`);
+      } else {
+        console.log("[scheduler:campaigns] no due campaigns found");
       }
     } catch (error) {
-      console.error("Scheduled campaign processor failed", error);
+      console.error("[scheduler:campaigns] processor failed", error);
+    } finally {
+      campaignSchedulerRunning = false;
     }
   };
 
+  console.log(
+    `[scheduler:campaigns] started, polling every ${CAMPAIGN_SCHEDULER_INTERVAL_MS / 1000}s`,
+  );
   await runScheduledCampaigns();
-  setInterval(runScheduledCampaigns, 60 * 1000);
+  setInterval(runScheduledCampaigns, CAMPAIGN_SCHEDULER_INTERVAL_MS);
 
   const runDueAutomationExecutions = async () => {
     try {
@@ -41,7 +61,7 @@ const startServer = async () => {
   };
 
   await runDueAutomationExecutions();
-  setInterval(runDueAutomationExecutions, 60 * 1000);
+  setInterval(runDueAutomationExecutions, AUTOMATION_SCHEDULER_INTERVAL_MS);
 };
 
 startServer().catch((error) => {

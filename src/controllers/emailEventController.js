@@ -1,4 +1,7 @@
 import CampaignRecipient from "../models/CampaignRecipient.js";
+import EmailEvent from "../models/EmailEvent.js";
+import Subscriber from "../models/Subscriber.js";
+import SuppressionEntry from "../models/SuppressionEntry.js";
 import { storeEmailEvent } from "../services/emailEventService.js";
 import { env } from "../config/env.js";
 import { processSesEventPayload } from "../services/sesEventProcessorService.js";
@@ -74,19 +77,35 @@ const trackClick = async (req, res) => {
 };
 
 const ingestSesEvent = async (req, res) => {
+  console.log("[ses:webhook] hit", {
+    method: req.method,
+    path: req.originalUrl,
+    contentType: req.headers["content-type"] || "",
+    bodyType: req.body?.Type || req.body?.type || req.body?.["detail-type"] || "",
+    source: req.body?.source || req.body?.Source || "",
+  });
+
   if (env.sesWebhookSecret) {
     const secret = req.headers["x-webhook-secret"];
     if (secret !== env.sesWebhookSecret) {
+      console.warn("[ses:webhook] rejected invalid secret");
       return res.status(401).json({ message: "Invalid webhook secret" });
     }
   }
 
   if (req.body.Type === "SubscriptionConfirmation") {
+    console.log("[ses:webhook] subscription confirmation received");
     return res.json({ message: "Subscription confirmation received" });
   }
 
   try {
     const { normalized } = await processSesEventPayload(req.body);
+
+    console.log("[ses:webhook] processed event", {
+      eventType: normalized.eventType,
+      messageId: normalized.messageId,
+      recipientEmail: normalized.recipientEmail,
+    });
 
     return res.json({
       message: "Event stored",
@@ -98,4 +117,45 @@ const ingestSesEvent = async (req, res) => {
   }
 };
 
-export { ingestSesEvent, trackClick, trackOpen };
+const getWebhookEventDebug = async (_req, res) => {
+  const [events, suppressions] = await Promise.all([
+    EmailEvent.find({
+      eventType: { $in: ["bounce", "complaint", "reject"] },
+    })
+      .sort({ timestamp: -1 })
+      .limit(25)
+      .populate({ path: "campaignId", select: "name status" })
+      .lean(),
+    SuppressionEntry.find({
+      reason: { $in: ["bounce", "complaint", "reject"] },
+    })
+      .sort({ updatedAt: -1 })
+      .limit(25)
+      .lean(),
+  ]);
+
+  const normalizedEvents = await Promise.all(
+    events.map(async (event) => {
+      const subscriber = await Subscriber.findOne({ email: event.recipientEmail })
+        .select("status blockedReason blockedAt")
+        .lean();
+
+      return {
+        ...event,
+        subscriber: subscriber || null,
+      };
+    }),
+  );
+
+  return res.json({
+    recentWebhookEvents: normalizedEvents,
+    recentSuppressions: suppressions,
+    counts: {
+      bounce: normalizedEvents.filter((event) => event.eventType === "bounce").length,
+      complaint: normalizedEvents.filter((event) => event.eventType === "complaint").length,
+      reject: normalizedEvents.filter((event) => event.eventType === "reject").length,
+    },
+  });
+};
+
+export { getWebhookEventDebug, ingestSesEvent, trackClick, trackOpen };

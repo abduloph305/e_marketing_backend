@@ -47,6 +47,53 @@ const parseDateTimeInput = (value) => {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+const buildCampaignWritePayload = (payload, existingCampaign = null) => {
+  const scheduledAt = parseDateTimeInput(payload.scheduledAt);
+  const requestedStatus = String(payload.status || "").trim();
+  const isRecurring = Boolean(payload.isRecurring ?? existingCampaign?.isRecurring);
+  const existingScheduledAt = existingCampaign?.scheduledAt
+    ? new Date(existingCampaign.scheduledAt)
+    : null;
+  const scheduledTimeChanged =
+    Boolean(scheduledAt) &&
+    (!existingScheduledAt || scheduledAt.getTime() !== existingScheduledAt.getTime());
+  const shouldBeScheduled =
+    isRecurring ||
+    (Boolean(scheduledAt) &&
+      (!existingCampaign || scheduledTimeChanged || requestedStatus === "scheduled" || existingCampaign.status === "scheduled"));
+
+  const writePayload = {
+    name: payload.name?.trim(),
+    type: payload.type,
+    goal: payload.goal || "clicks",
+    subject: payload.subject?.trim(),
+    previewText: payload.previewText?.trim() || "",
+    fromName: payload.fromName?.trim(),
+    fromEmail: payload.fromEmail?.trim().toLowerCase(),
+    replyTo: payload.replyTo?.trim().toLowerCase() || "",
+    templateId: payload.templateId || null,
+    segmentId: payload.segmentId || null,
+    status: shouldBeScheduled
+      ? "scheduled"
+      : requestedStatus || existingCampaign?.status || "draft",
+    scheduledAt,
+    isRecurring,
+    recurrenceInterval: normalizeRecurrenceInterval(payload.recurrenceInterval),
+    recurrenceUnit: normalizeRecurrenceUnit(payload.recurrenceUnit),
+    recurrenceMaxRuns: Number(payload.recurrenceMaxRuns || 0),
+    estimatedCost:
+      payload.estimatedCost === undefined ? undefined : Number(payload.estimatedCost || 0),
+  };
+
+  if (shouldBeScheduled) {
+    writePayload.sentAt = null;
+  } else if (payload.sentAt !== undefined) {
+    writePayload.sentAt = payload.sentAt || null;
+  }
+
+  return writePayload;
+};
+
 const buildListMatch = (query) => {
   const match = {};
 
@@ -81,31 +128,7 @@ const buildListMatch = (query) => {
 };
 
 const normalizeCampaignPayload = (payload) => {
-  const isRecurring = Boolean(payload.isRecurring);
-  const scheduledAt = parseDateTimeInput(payload.scheduledAt);
-  const status = isRecurring && scheduledAt ? "scheduled" : payload.status || "draft";
-
-  return {
-    name: payload.name?.trim(),
-    type: payload.type,
-    goal: payload.goal || "clicks",
-    subject: payload.subject?.trim(),
-    previewText: payload.previewText?.trim() || "",
-    fromName: payload.fromName?.trim(),
-    fromEmail: payload.fromEmail?.trim().toLowerCase(),
-    replyTo: payload.replyTo?.trim().toLowerCase() || "",
-    templateId: payload.templateId || null,
-    segmentId: payload.segmentId || null,
-    status,
-    scheduledAt,
-    isRecurring,
-    recurrenceInterval: normalizeRecurrenceInterval(payload.recurrenceInterval),
-    recurrenceUnit: normalizeRecurrenceUnit(payload.recurrenceUnit),
-    recurrenceMaxRuns: Number(payload.recurrenceMaxRuns || 0),
-    estimatedCost:
-      payload.estimatedCost === undefined ? undefined : Number(payload.estimatedCost || 0),
-    sentAt: payload.sentAt || null,
-  };
+  return buildCampaignWritePayload(payload);
 };
 
 const buildDuplicateCampaignName = async (baseName) => {
@@ -176,9 +199,15 @@ const createCampaign = async (req, res) => {
 
 const updateCampaign = async (req, res) => {
   try {
+    const existingCampaign = await EmailCampaign.findById(req.params.id);
+
+    if (!existingCampaign) {
+      return res.status(404).json({ message: "Campaign not found" });
+    }
+
     const campaign = await EmailCampaign.findByIdAndUpdate(
       req.params.id,
-      normalizeCampaignPayload(req.body),
+      buildCampaignWritePayload(req.body, existingCampaign),
       {
         returnDocument: "after",
         runValidators: true,
@@ -294,11 +323,18 @@ const scheduleCampaign = async (req, res) => {
     }
   }
 
+  const existingCampaign = await EmailCampaign.findById(req.params.id);
+
+  if (!existingCampaign) {
+    return res.status(404).json({ message: "Campaign not found" });
+  }
+
   const campaign = await EmailCampaign.findByIdAndUpdate(
     req.params.id,
     {
       status: "scheduled",
       scheduledAt,
+      sentAt: null,
     },
     {
       returnDocument: "after",

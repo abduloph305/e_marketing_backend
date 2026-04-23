@@ -7,6 +7,8 @@ import {
   updateCampaignRecipientStatus,
 } from "./campaignService.js";
 
+const normalizeEmail = (value = "") => String(value || "").trim().toLowerCase();
+
 const subscriberStatusMap = {
   bounce: "bounced",
   complaint: "blocked",
@@ -55,8 +57,11 @@ const recencyBonus = (ageDays, weights) => {
   return stale;
 };
 
-const shouldCreateSuppression = ({ eventType, bounceType }) =>
-  eventType === "complaint" || (eventType === "bounce" && bounceType === "Permanent");
+const shouldCreateSuppression = ({ eventType }) =>
+  eventType === "bounce" ||
+  eventType === "complaint" ||
+  eventType === "reject" ||
+  eventType === "unsubscribe";
 
 const resolveSuppressionReason = (eventType) => {
   if (eventType === "complaint") return "complaint";
@@ -64,6 +69,90 @@ const resolveSuppressionReason = (eventType) => {
   if (eventType === "reject") return "reject";
   if (eventType === "unsubscribe") return "unsubscribe";
   return "manual";
+};
+
+const resolveSubscriberUpdateForEvent = (subscriber = {}, eventType, timestamp) => {
+  if (!subscriber?._id) {
+    return null;
+  }
+
+  const currentStatus = String(subscriber.status || "").toLowerCase();
+  const currentBlockedReason = String(subscriber.blockedReason || "").toLowerCase();
+
+  if (currentStatus === "blocked" && currentBlockedReason === "spam" && eventType !== "complaint") {
+    return null;
+  }
+
+  if (eventType === "complaint") {
+    return {
+      status: "blocked",
+      blockedReason: "spam",
+      blockedAt: timestamp,
+    };
+  }
+
+  if (eventType === "bounce") {
+    return {
+      status: "bounced",
+      blockedReason: "",
+      blockedAt: null,
+    };
+  }
+
+  if (eventType === "reject") {
+    return {
+      status: "suppressed",
+      blockedReason: "",
+      blockedAt: null,
+    };
+  }
+
+  if (eventType === "unsubscribe") {
+    return {
+      status: "unsubscribed",
+      blockedReason: "",
+      blockedAt: null,
+    };
+  }
+
+  return null;
+};
+
+const upsertSuppressionFromEvent = async ({
+  recipientEmail,
+  campaignId,
+  subscriberId,
+  eventType,
+  timestamp,
+}) => {
+  if (!["bounce", "complaint", "reject", "unsubscribe"].includes(eventType)) {
+    return null;
+  }
+
+  const suppression = await SuppressionEntry.findOneAndUpdate(
+    { email: recipientEmail },
+    {
+      email: recipientEmail,
+      reason: resolveSuppressionReason(eventType),
+      source: "ses",
+      status: "active",
+      relatedCampaignId: campaignId,
+      relatedSubscriberId: subscriberId,
+      updatedAt: timestamp,
+    },
+    {
+      upsert: true,
+      returnDocument: "after",
+      setDefaultsOnInsert: true,
+      runValidators: true,
+    }
+  );
+
+  console.log(
+    `[audience] suppression updated for ${recipientEmail} (${suppression.reason})`,
+  );
+
+  return suppression;
 };
 
 const recalculateEngagementScore = (subscriber = {}, referenceDate = new Date()) => {
@@ -86,6 +175,26 @@ const recalculateEngagementScore = (subscriber = {}, referenceDate = new Date())
     (subscriber.status === "blocked" || subscriber.status === "complained" ? 35 : 0);
 
   return Math.min(100, Math.max(0, Math.round(engagementScore)));
+};
+
+const updateSubscriberFromEmailEvent = async ({ subscriber, eventType, timestamp, recipientEmail }) => {
+  const nextSubscriberUpdate = resolveSubscriberUpdateForEvent(subscriber, eventType, timestamp);
+
+  if (!nextSubscriberUpdate) {
+    return null;
+  }
+
+  const updatedSubscriber = await Subscriber.findByIdAndUpdate(
+    subscriber._id,
+    nextSubscriberUpdate,
+    { returnDocument: "after", runValidators: true },
+  );
+
+  console.log(
+    `[audience] subscriber updated ${recipientEmail} -> ${updatedSubscriber.status}`,
+  );
+
+  return updatedSubscriber;
 };
 
 const updateSubscriberActivity = async (recipientEmail, eventType, timestamp) => {
@@ -146,10 +255,12 @@ const storeEmailEvent = async ({
   geo = null,
 }) => {
   try {
+    const normalizedEmail = normalizeEmail(recipientEmail);
+
     if (singularEventTypes.has(eventType)) {
       const existingEvent = await EmailEvent.findOne({
         messageId,
-        recipientEmail,
+        recipientEmail: normalizedEmail,
         eventType,
       });
 
@@ -161,7 +272,7 @@ const storeEmailEvent = async ({
     const event = await EmailEvent.create({
       campaignId,
       subscriberId,
-      recipientEmail,
+      recipientEmail: normalizedEmail,
       messageId,
       eventType,
       timestamp,
@@ -182,56 +293,47 @@ const storeEmailEvent = async ({
     await updateCampaignRecipientStatus({
       campaignId,
       subscriberId,
-      recipientEmail,
+      recipientEmail: normalizedEmail,
       messageId,
       eventType,
       timestamp,
     });
 
-    const currentSubscriber = await Subscriber.findOne({ email: recipientEmail }).select(
+    const currentSubscriber = await Subscriber.findOne({ email: normalizedEmail }).select(
       "status blockedReason blockedAt"
     );
 
-    const subscriberStatus = subscriberStatusMap[eventType];
-    if (subscriberStatus && currentSubscriber) {
-      if (currentSubscriber.status === "blocked" && subscriberStatus !== "blocked") {
-        // Keep spam or manually blocked contacts locked out of sends.
-      } else {
-        const nextSubscriberUpdate = { status: subscriberStatus };
+    if (["bounce", "complaint"].includes(eventType)) {
+      console.log(`[ses:event] received ${eventType} for ${normalizedEmail}`);
+    }
 
-        if (subscriberStatus === "blocked") {
-          nextSubscriberUpdate.blockedReason = "spam";
-          nextSubscriberUpdate.blockedAt = timestamp;
-        } else {
-          nextSubscriberUpdate.blockedReason = "";
-          nextSubscriberUpdate.blockedAt = null;
-        }
+    if (currentSubscriber) {
+      const updatedSubscriber = await updateSubscriberFromEmailEvent({
+        subscriber: currentSubscriber,
+        eventType,
+        timestamp,
+        recipientEmail: normalizedEmail,
+      });
 
-        await Subscriber.findByIdAndUpdate(currentSubscriber._id, nextSubscriberUpdate, {
-          returnDocument: "after",
-        });
+      if (updatedSubscriber && ["bounce", "complaint"].includes(eventType)) {
+        console.log(
+          `[ses:event] subscriber state synced for ${normalizedEmail} as ${updatedSubscriber.status}`,
+        );
       }
     }
 
     if (["send", "delivery", "open", "click"].includes(eventType)) {
-      await updateSubscriberActivity(recipientEmail, eventType, timestamp);
+      await updateSubscriberActivity(normalizedEmail, eventType, timestamp);
     }
 
     if (shouldCreateSuppression({ eventType, bounceType })) {
-      await SuppressionEntry.findOneAndUpdate(
-        { email: recipientEmail },
+      await upsertSuppressionFromEvent(
         {
-          email: recipientEmail,
-          reason: resolveSuppressionReason(eventType),
-          source: "ses",
-          status: "active",
-          relatedCampaignId: campaignId,
-          relatedSubscriberId: subscriberId,
-        },
-        {
-          upsert: true,
-          returnDocument: "after",
-          setDefaultsOnInsert: true,
+          recipientEmail: normalizedEmail,
+          campaignId,
+          subscriberId,
+          eventType,
+          timestamp,
         }
       );
     }
@@ -240,7 +342,7 @@ const storeEmailEvent = async ({
       await logCampaignActivity(
         campaignId,
         `event:${eventType}`,
-        `Recipient ${recipientEmail} triggered ${eventType}`,
+        `Recipient ${normalizedEmail} triggered ${eventType}`,
         { messageId }
       );
       await updateCampaignCounters(campaignId);
@@ -251,7 +353,7 @@ const storeEmailEvent = async ({
     if (error.code === 11000) {
       return EmailEvent.findOne({
         messageId,
-        recipientEmail,
+        recipientEmail: normalizedEmail,
         eventType,
         timestamp,
       });

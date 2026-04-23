@@ -11,11 +11,31 @@ import { buildNextRecurringRun } from "../utils/campaignRecurrence.js";
 import { sendCampaign as sendCampaignThroughSes } from "./sesService.js";
 import { storeEmailEvent } from "./emailEventService.js";
 import { buildSegmentQuery, normalizeSegmentDefinition } from "../utils/segmentEngine.js";
+import { isSubscriberEligibleForEmail } from "../utils/emailEligibility.js";
 
 const campaignPopulate = [
   { path: "templateId" },
   { path: "segmentId", select: "name definition rules" },
 ];
+
+const claimDueCampaign = async (campaignId) => {
+  const claimedCampaign = await EmailCampaign.findOneAndUpdate(
+    {
+      _id: campaignId,
+      status: "scheduled",
+    },
+    {
+      $set: {
+        status: "sending",
+      },
+    },
+    {
+      returnDocument: "after",
+    },
+  ).populate(campaignPopulate);
+
+  return claimedCampaign;
+};
 
 const buildCampaignRecipients = async (campaign) => {
   let match = { status: "subscribed" };
@@ -34,7 +54,9 @@ const buildCampaignRecipients = async (campaign) => {
   const suppressedSet = new Set(suppressedEmails.map((item) => item.email));
   const candidateRecipients = await Subscriber.find(match).limit(500);
 
-  return candidateRecipients.filter((subscriber) => !suppressedSet.has(subscriber.email)).slice(0, 200);
+  return candidateRecipients
+    .filter((subscriber) => isSubscriberEligibleForEmail(subscriber) && !suppressedSet.has(subscriber.email))
+    .slice(0, 200);
 };
 
 const buildTrackingUrls = (recipientId) => {
@@ -172,27 +194,56 @@ const dispatchCampaign = async (campaignId, { mode = "manual" } = {}) => {
 };
 
 const processDueScheduledCampaigns = async () => {
-  const now = new Date();
-  const dueCampaigns = await EmailCampaign.find({
-    status: "scheduled",
-    scheduledAt: { $lte: now },
-  })
-    .sort({ scheduledAt: 1 })
-    .limit(20);
-
   const results = [];
 
-  for (const campaign of dueCampaigns) {
+  while (true) {
+    const now = new Date();
+    const nextDueCampaign = await EmailCampaign.findOne({
+      status: "scheduled",
+      scheduledAt: { $lte: now },
+    })
+      .sort({ scheduledAt: 1, createdAt: 1 })
+      .select("_id name scheduledAt")
+      .lean();
+
+    if (!nextDueCampaign) {
+      break;
+    }
+
+    console.log(
+      `[scheduler:campaigns] picked campaign ${nextDueCampaign._id} (${nextDueCampaign.name || "unnamed"}) due at ${new Date(nextDueCampaign.scheduledAt).toISOString()}`,
+    );
+
+    const claimedCampaign = await claimDueCampaign(nextDueCampaign._id);
+
+    if (!claimedCampaign) {
+      console.log(
+        `[scheduler:campaigns] campaign ${nextDueCampaign._id} was already claimed by another worker`,
+      );
+      continue;
+    }
+
     try {
-      const result = await dispatchCampaign(campaign._id, { mode: "scheduled" });
-      results.push({ campaignId: String(campaign._id), status: "sent", sentCount: result.sentCount });
+      const result = await dispatchCampaign(claimedCampaign._id, { mode: "scheduled" });
+      console.log(
+        `[scheduler:campaigns] sent campaign ${claimedCampaign._id} (${result.sentCount} recipient(s))`,
+      );
+      results.push({
+        campaignId: String(claimedCampaign._id),
+        status: "sent",
+        sentCount: result.sentCount,
+      });
     } catch (error) {
-      await EmailCampaign.findByIdAndUpdate(campaign._id, { status: "failed" });
-      await logCampaignActivity(campaign._id, "send_failed", "Scheduled campaign send failed", {
+      await EmailCampaign.findByIdAndUpdate(claimedCampaign._id, { status: "failed" });
+      console.error(
+        `[scheduler:campaigns] failed campaign ${claimedCampaign._id}`,
+        error,
+      );
+      await logCampaignActivity(claimedCampaign._id, "send_failed", "Scheduled campaign send failed", {
         error: error.message,
       });
       results.push({
-        campaignId: String(campaign._id),
+        campaignId: String(claimedCampaign._id),
         status: "failed",
         error: error.message,
       });

@@ -6,6 +6,7 @@ import EmailTemplate from "../models/EmailTemplate.js";
 import Segment from "../models/Segment.js";
 import Subscriber from "../models/Subscriber.js";
 import { buildSegmentQuery, normalizeSegmentDefinition } from "../utils/segmentEngine.js";
+import { isSubscriberEligibleForEmail } from "../utils/emailEligibility.js";
 import { sendAutomationEmail } from "./sesService.js";
 
 const defaultStepTitles = {
@@ -295,6 +296,10 @@ const applySendEmailStep = async ({ step, workflow, subscriber, execution }) => 
 
   if (!template) {
     throw new Error("Selected email template not found");
+  }
+
+  if (!isSubscriberEligibleForEmail(subscriber)) {
+    throw new Error(`Subscriber ${subscriber.email} is not eligible to receive email`);
   }
 
   const subject = step.config?.subjectOverride?.trim() || template.subject;
