@@ -7,7 +7,10 @@ import EmailCampaign, {
 } from "../models/EmailCampaign.js";
 import EmailEvent from "../models/EmailEvent.js";
 import { buildCampaignDetailPayload, logCampaignActivity } from "../services/campaignService.js";
-import { dispatchCampaign } from "../services/campaignDispatchService.js";
+import {
+  dispatchCampaign,
+  estimateCampaignRecipientCount,
+} from "../services/campaignDispatchService.js";
 import { normalizeRecurrenceInterval, normalizeRecurrenceUnit } from "../utils/campaignRecurrence.js";
 
 const campaignPopulate = [
@@ -131,6 +134,16 @@ const normalizeCampaignPayload = (payload) => {
   return buildCampaignWritePayload(payload);
 };
 
+const refreshCampaignRecipientEstimate = async (campaignId) => {
+  const totalRecipients = await estimateCampaignRecipientCount(campaignId);
+
+  await EmailCampaign.findByIdAndUpdate(campaignId, {
+    totalRecipients,
+  });
+
+  return totalRecipients;
+};
+
 const buildDuplicateCampaignName = async (baseName) => {
   const escapedName = baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const existingCopies = await EmailCampaign.countDocuments({
@@ -186,6 +199,7 @@ const getCampaignById = async (req, res) => {
 const createCampaign = async (req, res) => {
   try {
     const campaign = await EmailCampaign.create(normalizeCampaignPayload(req.body));
+    await refreshCampaignRecipientEstimate(campaign._id);
     await logCampaignActivity(campaign._id, "created", "Campaign created", {
       status: campaign.status,
     });
@@ -221,6 +235,10 @@ const updateCampaign = async (req, res) => {
     await logCampaignActivity(campaign._id, "updated", "Campaign updated", {
       status: campaign.status,
     });
+
+    if (!["sent", "sending"].includes(campaign.status)) {
+      await refreshCampaignRecipientEstimate(campaign._id);
+    }
 
     const payload = await buildCampaignDetailPayload(campaign._id);
     return res.json(payload);
@@ -345,6 +363,8 @@ const scheduleCampaign = async (req, res) => {
   if (!campaign) {
     return res.status(404).json({ message: "Campaign not found" });
   }
+
+  await refreshCampaignRecipientEstimate(campaign._id);
 
   await logCampaignActivity(campaign._id, "scheduled", "Campaign scheduled", {
     scheduledAt: campaign.scheduledAt,

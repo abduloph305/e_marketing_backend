@@ -10,19 +10,18 @@ import AutomationWorkflow, {
   automationWorkflowStatuses,
 } from "../models/AutomationWorkflow.js";
 import { env } from "../config/env.js";
+import { isValidObjectId } from "mongoose";
 import {
   buildWorkflowDetailPayload,
   buildWorkflowSummary,
-  createWorkflowExecution,
   logAutomationEvent,
   normalizeSteps,
   normalizeWorkflowPayload,
-  processWorkflowExecution,
   triggerWorkflowExecutions,
   registerEcommerceAutomationHooks,
   replaceWorkflowSteps,
 } from "../services/automationService.js";
-import { buildAutomationEmailPayload } from "../services/sesService.js";
+import { buildAutomationEmailPayload, sendAutomationEmail } from "../services/sesService.js";
 
 const escapeHtml = (value = "") =>
   String(value)
@@ -343,39 +342,65 @@ const parseEmailList = (value) =>
   );
 
 const createSampleExecution = async (req, res) => {
-  const workflow = await AutomationWorkflow.findById(req.params.id);
+  const workflowPayload = req.body.workflow || null;
+  const workflowId = req.params.id || req.body.workflowId || null;
+  let workflow = workflowPayload;
+
+  if (!workflow && workflowId) {
+    const loadedWorkflow = await buildWorkflowDetailPayload(workflowId);
+
+    if (!loadedWorkflow) {
+      return res.status(404).json({ message: "Workflow not found" });
+    }
+
+    workflow = workflowPayload
+      ? { ...loadedWorkflow, ...workflowPayload, steps: workflowPayload.steps || loadedWorkflow.steps || [] }
+      : loadedWorkflow;
+  }
 
   if (!workflow) {
-    return res.status(404).json({ message: "Workflow not found" });
+    return res.status(400).json({ message: "Workflow data is required" });
   }
 
   try {
     const recipientEmails = parseEmailList(
       req.body.emails || req.body.recipientEmail || req.body.email || env.adminEmail || "preview@example.com",
     );
-    const previewFirstName = String(req.body.firstName || "Preview").trim() || "Preview";
-    const previewLastName = String(req.body.lastName || "Recipient").trim() || "Recipient";
+    const steps = Array.isArray(workflow.steps) && workflow.steps.length
+      ? workflow.steps
+      : workflowId && isValidObjectId(workflowId)
+        ? await AutomationStep.find({ workflowId }).sort({ order: 1 }).lean()
+        : [];
+    const emailStep = steps.find((step) => step.type === "send_email") || null;
+
+    if (!emailStep?.config?.templateId) {
+      return res.status(400).json({ message: "Send email step requires a template" });
+    }
+
+    const template = await EmailTemplate.findById(emailStep.config.templateId).lean();
+
+    if (!template) {
+      return res.status(404).json({ message: "Selected email template not found" });
+    }
 
     const results = [];
 
     for (const recipientEmail of recipientEmails) {
-      const execution = await createWorkflowExecution({
-        workflowId: workflow._id,
-        trigger: workflow.trigger,
-        context: {
-          source: "manual_preview",
-          notes: "Created from the dashboard to validate workflow structure.",
-          previewRecipientEmail: recipientEmail,
-          previewFirstName,
-          previewLastName,
+      const { messageId } = await sendAutomationEmail({
+        template,
+        recipient: {
+          email: recipientEmail,
+          firstName: "Preview",
+          lastName: "Recipient",
         },
+        subject: emailStep.config.subjectOverride?.trim() || template.subject,
+        previewText: template.previewText || workflow.description || workflow.name,
       });
 
-      await processWorkflowExecution(execution._id);
-      results.push({ recipientEmail, executionId: execution._id });
+      results.push({ recipientEmail, messageId });
     }
 
-    return res.json({ message: "Sample execution processed", count: results.length, results });
+    return res.json({ message: "Test email sent", count: results.length, results });
   } catch (error) {
     return res.status(400).json({ message: error.message || "Unable to process sample execution" });
   }

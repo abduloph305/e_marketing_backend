@@ -51,12 +51,29 @@ const buildCampaignRecipients = async (campaign) => {
   }
 
   const suppressedEmails = await SuppressionEntry.find().select("email -_id").lean();
-  const suppressedSet = new Set(suppressedEmails.map((item) => item.email));
+  const suppressedSet = new Set(
+    suppressedEmails.map((item) => String(item.email || "").toLowerCase()),
+  );
   const candidateRecipients = await Subscriber.find(match).limit(500);
 
   return candidateRecipients
-    .filter((subscriber) => isSubscriberEligibleForEmail(subscriber) && !suppressedSet.has(subscriber.email))
+    .filter(
+      (subscriber) =>
+        isSubscriberEligibleForEmail(subscriber) &&
+        !suppressedSet.has(String(subscriber.email || "").toLowerCase()),
+    )
     .slice(0, 200);
+};
+
+const estimateCampaignRecipientCount = async (campaignId) => {
+  const campaign = await EmailCampaign.findById(campaignId).populate(campaignPopulate);
+
+  if (!campaign) {
+    return 0;
+  }
+
+  const recipients = await buildCampaignRecipients(campaign);
+  return recipients.length;
 };
 
 const buildTrackingUrls = (recipientId) => {
@@ -253,4 +270,4 @@ const processDueScheduledCampaigns = async () => {
   return results;
 };
 
-export { dispatchCampaign, processDueScheduledCampaigns };
+export { dispatchCampaign, estimateCampaignRecipientCount, processDueScheduledCampaigns };
