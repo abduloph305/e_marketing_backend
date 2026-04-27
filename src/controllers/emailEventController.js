@@ -5,6 +5,7 @@ import SuppressionEntry from "../models/SuppressionEntry.js";
 import { storeEmailEvent } from "../services/emailEventService.js";
 import { env } from "../config/env.js";
 import { processSesEventPayload } from "../services/sesEventProcessorService.js";
+import { inferDeviceType } from "../utils/device.js";
 
 const transparentGif = Buffer.from(
   "R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==",
@@ -18,7 +19,7 @@ const recordTrackedEvent = async (recipientId, eventType, extra = {}) => {
     return null;
   }
 
-  return storeEmailEvent({
+  const event = await storeEmailEvent({
     campaignId: recipient.campaignId,
     subscriberId: recipient.subscriberId,
     recipientEmail: recipient.email,
@@ -35,9 +36,35 @@ const recordTrackedEvent = async (recipientId, eventType, extra = {}) => {
     ctaType: extra.ctaType || "",
     ipAddress: extra.ipAddress || "",
     userAgent: extra.userAgent || "",
-    deviceType: extra.deviceType || "",
+    deviceType: extra.deviceType || inferDeviceType(extra.userAgent),
     geo: extra.geo || null,
   });
+
+  return { event, recipient };
+};
+
+const appendQueryParams = (baseUrl, params = {}) => {
+  const url = String(baseUrl || "");
+  const entries = Object.entries(params).filter(([, value]) => String(value || "").trim());
+
+  if (!entries.length) {
+    return url;
+  }
+
+  try {
+    const parsedUrl = new URL(url);
+    entries.forEach(([key, value]) => {
+      if (!parsedUrl.searchParams.has(key)) {
+        parsedUrl.searchParams.set(key, String(value));
+      }
+    });
+    return parsedUrl.toString();
+  } catch {
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}${entries
+      .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+      .join("&")}`;
+  }
 };
 
 const trackOpen = async (req, res) => {
@@ -64,7 +91,7 @@ const trackClick = async (req, res) => {
     return res.status(400).json({ message: "Missing target URL" });
   }
 
-  await recordTrackedEvent(req.params.recipientId, "click", {
+  const tracked = await recordTrackedEvent(req.params.recipientId, "click", {
     clickedLink: String(targetUrl),
     blockId: req.query.blockId || "",
     section: req.query.section || "",
@@ -73,7 +100,18 @@ const trackClick = async (req, res) => {
     userAgent: req.headers["user-agent"] || "",
   });
 
-  return res.redirect(String(targetUrl));
+  const attributedTargetUrl = tracked?.recipient
+    ? appendQueryParams(targetUrl, {
+        sl_campaign_id: tracked.recipient.campaignId,
+        sl_recipient_id: tracked.recipient._id,
+        sl_subscriber_id: tracked.recipient.subscriberId,
+        utm_source: "sellerslogin_email",
+        utm_medium: "email",
+        utm_campaign: tracked.recipient.campaignId,
+      })
+    : String(targetUrl);
+
+  return res.redirect(attributedTargetUrl);
 };
 
 const ingestSesEvent = async (req, res) => {

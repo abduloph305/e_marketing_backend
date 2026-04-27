@@ -93,6 +93,55 @@ const normalizeTags = (tags = []) =>
 
 const normalizeEmail = (value = "") => String(value).trim().toLowerCase();
 
+const firstTruthy = (...values) =>
+  values.find((value) => String(value || "").trim()) || "";
+
+const resolveMarketingAttribution = (payload = {}) => {
+  const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
+
+  return {
+    campaignId: firstTruthy(
+      payload.campaignId,
+      payload.marketingCampaignId,
+      payload.sl_campaign_id,
+      metadata.campaignId,
+      metadata.marketingCampaignId,
+      metadata.sl_campaign_id,
+    ),
+    recipientId: firstTruthy(
+      payload.recipientId,
+      payload.campaignRecipientId,
+      payload.marketingRecipientId,
+      payload.sl_recipient_id,
+      metadata.recipientId,
+      metadata.campaignRecipientId,
+      metadata.marketingRecipientId,
+      metadata.sl_recipient_id,
+    ),
+    messageId: firstTruthy(payload.messageId, metadata.messageId),
+  };
+};
+
+const resolveConversionSourceId = (payload = {}) =>
+  firstTruthy(
+    payload.orderId,
+    payload.orderNumber,
+    payload.paymentId,
+    payload.sourceEventId,
+    payload.eventId,
+  );
+
+const resolveConversionRevenue = (payload = {}) =>
+  Number(
+    payload.amount ||
+      payload.orderTotal ||
+      payload.total ||
+      payload.totalSpent ||
+      payload.metadata?.amount ||
+      payload.metadata?.total ||
+      0,
+  );
+
 const normalizeSourceLocation = (payload = {}) => {
   const rawValue = String(
     payload.sourceLocation ||
@@ -543,13 +592,16 @@ const ingestOphmateEvent = async (req, res) => {
     const storedEvent = await createIntegrationEvent(payload, subscriber?._id, "received");
 
     let conversionResult = null;
-    if (["order.completed", "payment.success"].includes(payload.eventType)) {
+    if (["order.created", "order.completed", "payment.success"].includes(payload.eventType)) {
+      const attribution = resolveMarketingAttribution(payload);
       conversionResult = await attributeCampaignConversion({
-        campaignId: null,
+        campaignId: attribution.campaignId || null,
+        recipientId: attribution.recipientId || null,
+        messageId: attribution.messageId || null,
         email: payload.email,
         convertedAt: payload.timestamp ? new Date(payload.timestamp) : new Date(),
-        revenueAttributed: Number(payload.amount || payload.totalSpent || 0),
-        sourceEventId: payload.sourceEventId || payload.eventId || payload.orderId || "",
+        revenueAttributed: resolveConversionRevenue(payload),
+        sourceEventId: resolveConversionSourceId(payload),
         sourceEventType: payload.eventType,
       });
     }

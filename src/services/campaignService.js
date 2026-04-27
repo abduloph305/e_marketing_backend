@@ -25,6 +25,11 @@ const recipientEventConfig = {
   reject: { status: "rejected", dateField: null },
 };
 
+const normalizeObjectId = (value = null) => {
+  const id = String(value || "").trim();
+  return mongoose.Types.ObjectId.isValid(id) ? id : null;
+};
+
 const updateCampaignRecipientStatus = async ({
   campaignId = null,
   subscriberId = null,
@@ -163,8 +168,22 @@ const updateCampaignCounters = async (campaignId) => {
   );
 };
 
-const findAttributionRecipient = async ({ campaignId = null, email = "", messageId = null }) => {
+const findAttributionRecipient = async ({
+  campaignId = null,
+  email = "",
+  messageId = null,
+  recipientId = null,
+}) => {
+  const normalizedCampaignId = normalizeObjectId(campaignId);
+  const normalizedRecipientId = normalizeObjectId(recipientId);
   const normalizedEmail = String(email || "").trim().toLowerCase();
+
+  if (normalizedRecipientId) {
+    const recipientById = await CampaignRecipient.findById(normalizedRecipientId).lean();
+    if (recipientById) {
+      return recipientById;
+    }
+  }
 
   if (messageId) {
     const recipientByMessageId = await CampaignRecipient.findOne({ messageId }).lean();
@@ -173,9 +192,9 @@ const findAttributionRecipient = async ({ campaignId = null, email = "", message
     }
   }
 
-  if (campaignId && normalizedEmail) {
+  if (normalizedCampaignId && normalizedEmail) {
     const recipientByCampaign = await CampaignRecipient.findOne({
-      campaignId,
+      campaignId: normalizedCampaignId,
       email: normalizedEmail,
     }).lean();
 
@@ -203,12 +222,14 @@ const attributeCampaignConversion = async ({
   campaignId = null,
   email = "",
   messageId = null,
+  recipientId = null,
   convertedAt = new Date(),
   revenueAttributed = 0,
   sourceEventId = "",
   sourceEventType = "",
 }) => {
-  const recipient = await findAttributionRecipient({ campaignId, email, messageId });
+  const normalizedCampaignId = normalizeObjectId(campaignId);
+  const recipient = await findAttributionRecipient({ campaignId, email, messageId, recipientId });
 
   if (!recipient) {
     return null;
@@ -221,28 +242,40 @@ const attributeCampaignConversion = async ({
 
   if (
     normalizedSourceId &&
-    String(recipient.lastConversionSourceId || "") === normalizedSourceId
+    (
+      String(recipient.lastConversionSourceId || "") === normalizedSourceId ||
+      (Array.isArray(recipient.conversionSourceIds) &&
+        recipient.conversionSourceIds.includes(normalizedSourceId))
+    )
   ) {
     return recipient;
   }
 
+  const update = {
+    $set: {
+      status: "converted",
+      convertedAt: recipient.convertedAt || convertedAt,
+      lastConvertedAt: convertedAt,
+      lastConversionSourceId: normalizedSourceId || recipient.lastConversionSourceId || "",
+      lastConversionSourceType: normalizedSourceType || recipient.lastConversionSourceType || "",
+      campaignId: normalizedCampaignId || recipient.campaignId || null,
+      email: resolvedEmail,
+    },
+    $inc: {
+      conversionCount: 1,
+      revenueAttributed: nextRevenue,
+    },
+  };
+
+  if (normalizedSourceId) {
+    update.$addToSet = {
+      conversionSourceIds: normalizedSourceId,
+    };
+  }
+
   const updatedRecipient = await CampaignRecipient.findByIdAndUpdate(
     recipient._id,
-    {
-      $set: {
-        status: "converted",
-        convertedAt: recipient.convertedAt || convertedAt,
-        lastConvertedAt: convertedAt,
-        lastConversionSourceId: normalizedSourceId || recipient.lastConversionSourceId || "",
-        lastConversionSourceType: normalizedSourceType || recipient.lastConversionSourceType || "",
-        campaignId: campaignId || recipient.campaignId || null,
-        email: resolvedEmail,
-      },
-      $inc: {
-        conversionCount: 1,
-        revenueAttributed: nextRevenue,
-      },
-    },
+    update,
     { returnDocument: "after", runValidators: true }
   );
 

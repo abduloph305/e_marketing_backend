@@ -91,6 +91,10 @@ const campaignRecipientSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    conversionSourceIds: {
+      type: [String],
+      default: () => [],
+    },
     conversionCount: {
       type: Number,
       default: 0,

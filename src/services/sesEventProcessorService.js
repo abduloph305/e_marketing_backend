@@ -1,14 +1,6 @@
 import CampaignRecipient from "../models/CampaignRecipient.js";
 import { storeEmailEvent } from "./emailEventService.js";
-
-const inferDeviceType = (userAgent = "") => {
-  const value = userAgent.toLowerCase();
-
-  if (!value) return "";
-  if (value.includes("mobile")) return "mobile";
-  if (value.includes("tablet") || value.includes("ipad")) return "tablet";
-  return "desktop";
-};
+import { inferDeviceType } from "../utils/device.js";
 
 const EVENTBRIDGE_DETAIL_TYPE_MAP = {
   emailsent: "send",

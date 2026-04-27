@@ -7,6 +7,7 @@ import Subscriber, {
 import SuppressionEntry from "../models/SuppressionEntry.js";
 import { triggerWorkflowExecutions } from "../services/automationService.js";
 import { syncWebsiteAudience } from "../services/websiteAudienceSyncService.js";
+import { inferDeviceType } from "../utils/device.js";
 import { buildSubscriberMatch } from "../utils/subscriberFilters.js";
 
 const normalizeTags = (tags = []) =>
@@ -127,6 +128,20 @@ const calculateEngagementSummary = (payload) => {
   };
 };
 
+const normalizeEventDevice = (event = null) => {
+  if (!event) {
+    return null;
+  }
+
+  const deviceType = event.deviceType || inferDeviceType(event.userAgent);
+
+  return {
+    deviceType,
+    userAgent: event.userAgent || "",
+    timestamp: event.timestamp || null,
+  };
+};
+
 const normalizeSubscriberPayload = (payload) => {
   const email = payload.email?.trim().toLowerCase();
   const derivedNames = email ? deriveNamesFromEmail(email) : {};
@@ -235,14 +250,28 @@ const buildDetailPayload = async (subscriber) => {
     return null;
   }
 
-  const [recentEmailEvents, campaignHistory, suppressionEntry] =
+  const [recentEmailEvents, latestOpenEvent, latestClickEvent, campaignHistory, suppressionEntry] =
     await Promise.all([
       EmailEvent.find({ recipientEmail: subscriber.email })
         .sort({ timestamp: -1 })
         .limit(12)
         .select(
-          "eventType timestamp clickedLink bounceType complaintFeedbackType deviceType",
+          "eventType timestamp clickedLink bounceType complaintFeedbackType deviceType userAgent",
         )
+        .lean(),
+      EmailEvent.findOne({
+        recipientEmail: subscriber.email,
+        eventType: "open",
+      })
+        .sort({ timestamp: -1 })
+        .select("timestamp deviceType userAgent")
+        .lean(),
+      EmailEvent.findOne({
+        recipientEmail: subscriber.email,
+        eventType: "click",
+      })
+        .sort({ timestamp: -1 })
+        .select("timestamp deviceType userAgent")
         .lean(),
       CampaignRecipient.find({ email: subscriber.email })
         .sort({ updatedAt: -1 })
@@ -256,7 +285,14 @@ const buildDetailPayload = async (subscriber) => {
     ...subscriber.toObject(),
     sourceLocation: resolveSourceLocation(subscriber.toObject()),
     campaignHistory,
-    recentEmailEvents,
+    recentEmailEvents: recentEmailEvents.map((event) => ({
+      ...event,
+      deviceType: event.deviceType || inferDeviceType(event.userAgent),
+    })),
+    engagementDevices: {
+      lastOpen: normalizeEventDevice(latestOpenEvent),
+      lastClick: normalizeEventDevice(latestClickEvent),
+    },
     suppressionStatus: suppressionEntry
       ? {
           isSuppressed: true,
