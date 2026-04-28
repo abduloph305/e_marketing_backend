@@ -4,6 +4,12 @@ export const automationLogLevels = ["info", "warning", "error"];
 
 const automationLogSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     workflowId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "AutomationWorkflow",

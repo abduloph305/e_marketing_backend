@@ -1,6 +1,7 @@
 import Subscriber from "../models/Subscriber.js";
 import SuppressionEntry from "../models/SuppressionEntry.js";
 import { buildDateRangeMatch } from "../utils/dateRange.js";
+import { buildVendorMatch } from "../utils/vendorScope.js";
 
 const normalizeEmail = (email = "") => email.trim().toLowerCase();
 
@@ -13,6 +14,7 @@ const listSuppressions = async (req, res) => {
   const search = req.query.search?.trim();
 
   const match = {
+    ...buildVendorMatch(req),
     ...buildDateRangeMatch(req.query.startDate, req.query.endDate),
   };
 
@@ -62,7 +64,8 @@ const createSuppression = async (req, res) => {
     return res.status(400).json({ message: "Email is required" });
   }
 
-  const existingSubscriber = await Subscriber.findOne({ email }).select(
+  const vendorMatch = buildVendorMatch(req);
+  const existingSubscriber = await Subscriber.findOne({ ...vendorMatch, email }).select(
     "status blockedReason",
   );
 
@@ -73,14 +76,15 @@ const createSuppression = async (req, res) => {
   }
 
   const subscriber = await Subscriber.findOneAndUpdate(
-    { email },
+    { ...vendorMatch, email },
     { status: "suppressed" },
     { returnDocument: "after" }
   );
 
   const suppression = await SuppressionEntry.findOneAndUpdate(
-    { email },
+    { ...vendorMatch, email },
     {
+      ...vendorMatch,
       email,
       reason: req.body.reason || "manual",
       source: req.body.source || "admin",
@@ -100,7 +104,8 @@ const createSuppression = async (req, res) => {
 };
 
 const unsuppressEntry = async (req, res) => {
-  const suppression = await SuppressionEntry.findById(req.params.id);
+  const vendorMatch = buildVendorMatch(req);
+  const suppression = await SuppressionEntry.findOne({ _id: req.params.id, ...vendorMatch });
 
   if (!suppression) {
     return res.status(404).json({ message: "Suppression entry not found" });
@@ -112,7 +117,7 @@ const unsuppressEntry = async (req, res) => {
       .json({ message: "Spam complaint entries cannot be released manually" });
   }
 
-  const subscriber = await Subscriber.findOne({ email: suppression.email }).select(
+  const subscriber = await Subscriber.findOne({ ...vendorMatch, email: suppression.email }).select(
     "status blockedReason",
   );
 
@@ -126,7 +131,7 @@ const unsuppressEntry = async (req, res) => {
   await suppression.save();
 
   await Subscriber.findOneAndUpdate(
-    { email: suppression.email },
+    { ...vendorMatch, email: suppression.email },
     { status: "subscribed", blockedReason: "", blockedAt: null },
     { returnDocument: "after" }
   );
@@ -135,7 +140,8 @@ const unsuppressEntry = async (req, res) => {
 };
 
 const unsubscribeSubscriber = async (req, res) => {
-  const subscriber = await Subscriber.findById(req.params.id);
+  const vendorMatch = buildVendorMatch(req);
+  const subscriber = await Subscriber.findOne({ _id: req.params.id, ...vendorMatch });
 
   if (!subscriber) {
     return res.status(404).json({ message: "Subscriber not found" });
@@ -147,15 +153,16 @@ const unsubscribeSubscriber = async (req, res) => {
       .json({ message: "Spam-blocked subscribers cannot be changed manually" });
   }
 
-  const updatedSubscriber = await Subscriber.findByIdAndUpdate(
-    req.params.id,
+  const updatedSubscriber = await Subscriber.findOneAndUpdate(
+    { _id: req.params.id, ...vendorMatch },
     { status: "unsubscribed", blockedReason: "", blockedAt: null },
     { returnDocument: "after" }
   );
 
   const suppression = await SuppressionEntry.findOneAndUpdate(
-    { email: subscriber.email },
+    { ...vendorMatch, email: subscriber.email },
     {
+      ...vendorMatch,
       email: subscriber.email,
       reason: "unsubscribe",
       source: "admin",
@@ -173,7 +180,8 @@ const unsubscribeSubscriber = async (req, res) => {
 };
 
 const suppressSubscriber = async (req, res) => {
-  const subscriber = await Subscriber.findById(req.params.id);
+  const vendorMatch = buildVendorMatch(req);
+  const subscriber = await Subscriber.findOne({ _id: req.params.id, ...vendorMatch });
 
   if (!subscriber) {
     return res.status(404).json({ message: "Subscriber not found" });
@@ -186,8 +194,9 @@ const suppressSubscriber = async (req, res) => {
   }
 
   const suppression = await SuppressionEntry.findOneAndUpdate(
-    { email: subscriber.email },
+    { ...vendorMatch, email: subscriber.email },
     {
+      ...vendorMatch,
       email: subscriber.email,
       reason: req.body.reason || "manual",
       source: "admin",
@@ -207,7 +216,8 @@ const suppressSubscriber = async (req, res) => {
 };
 
 const blockSubscriber = async (req, res) => {
-  const subscriber = await Subscriber.findById(req.params.id);
+  const vendorMatch = buildVendorMatch(req);
+  const subscriber = await Subscriber.findOne({ _id: req.params.id, ...vendorMatch });
 
   if (!subscriber) {
     return res.status(404).json({ message: "Subscriber not found" });
@@ -219,8 +229,8 @@ const blockSubscriber = async (req, res) => {
       .json({ message: "Spam-blocked subscribers cannot be changed manually" });
   }
 
-  const blockedSubscriber = await Subscriber.findByIdAndUpdate(
-    req.params.id,
+  const blockedSubscriber = await Subscriber.findOneAndUpdate(
+    { _id: req.params.id, ...vendorMatch },
     {
       status: "blocked",
       blockedReason: "manual",
@@ -230,8 +240,9 @@ const blockSubscriber = async (req, res) => {
   );
 
   const suppression = await SuppressionEntry.findOneAndUpdate(
-    { email: subscriber.email },
+    { ...vendorMatch, email: subscriber.email },
     {
+      ...vendorMatch,
       email: subscriber.email,
       reason: "manual",
       source: "admin",
@@ -245,7 +256,8 @@ const blockSubscriber = async (req, res) => {
 };
 
 const unblockSubscriber = async (req, res) => {
-  const subscriber = await Subscriber.findById(req.params.id);
+  const vendorMatch = buildVendorMatch(req);
+  const subscriber = await Subscriber.findOne({ _id: req.params.id, ...vendorMatch });
 
   if (!subscriber) {
     return res.status(404).json({ message: "Subscriber not found" });
@@ -261,8 +273,8 @@ const unblockSubscriber = async (req, res) => {
       .json({ message: "Spam-blocked subscribers cannot be unblocked manually" });
   }
 
-  const unblockedSubscriber = await Subscriber.findByIdAndUpdate(
-    req.params.id,
+  const unblockedSubscriber = await Subscriber.findOneAndUpdate(
+    { _id: req.params.id, ...vendorMatch },
     {
       status: "subscribed",
       blockedReason: "",
@@ -271,7 +283,7 @@ const unblockSubscriber = async (req, res) => {
     { returnDocument: "after", runValidators: true }
   );
 
-  await SuppressionEntry.deleteMany({ email: subscriber.email });
+  await SuppressionEntry.deleteMany({ ...vendorMatch, email: subscriber.email });
 
   return res.json({ message: "Subscriber unblocked", subscriber: unblockedSubscriber });
 };

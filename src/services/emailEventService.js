@@ -124,14 +124,16 @@ const upsertSuppressionFromEvent = async ({
   subscriberId,
   eventType,
   timestamp,
+  vendorId = "",
 }) => {
   if (!["bounce", "complaint", "reject", "unsubscribe"].includes(eventType)) {
     return null;
   }
 
   const suppression = await SuppressionEntry.findOneAndUpdate(
-    { email: recipientEmail },
+    { vendorId, email: recipientEmail },
     {
+      vendorId,
       email: recipientEmail,
       reason: resolveSuppressionReason(eventType),
       source: "ses",
@@ -197,8 +199,8 @@ const updateSubscriberFromEmailEvent = async ({ subscriber, eventType, timestamp
   return updatedSubscriber;
 };
 
-const updateSubscriberActivity = async (recipientEmail, eventType, timestamp) => {
-  const subscriber = await Subscriber.findOne({ email: recipientEmail }).lean();
+const updateSubscriberActivity = async (recipientEmail, eventType, timestamp, vendorId = "") => {
+  const subscriber = await Subscriber.findOne({ vendorId, email: recipientEmail }).lean();
 
   if (!subscriber) {
     return;
@@ -237,6 +239,7 @@ const updateSubscriberActivity = async (recipientEmail, eventType, timestamp) =>
 const storeEmailEvent = async ({
   campaignId = null,
   subscriberId = null,
+  vendorId = "",
   recipientEmail,
   messageId,
   eventType,
@@ -254,11 +257,14 @@ const storeEmailEvent = async ({
   deviceType = "",
   geo = null,
 }) => {
+  let normalizedEmail = "";
+
   try {
-    const normalizedEmail = normalizeEmail(recipientEmail);
+    normalizedEmail = normalizeEmail(recipientEmail);
 
     if (singularEventTypes.has(eventType)) {
       const existingEvent = await EmailEvent.findOne({
+        vendorId,
         messageId,
         recipientEmail: normalizedEmail,
         eventType,
@@ -270,6 +276,7 @@ const storeEmailEvent = async ({
     }
 
     const event = await EmailEvent.create({
+      vendorId,
       campaignId,
       subscriberId,
       recipientEmail: normalizedEmail,
@@ -297,9 +304,10 @@ const storeEmailEvent = async ({
       messageId,
       eventType,
       timestamp,
+      vendorId,
     });
 
-    const currentSubscriber = await Subscriber.findOne({ email: normalizedEmail }).select(
+    const currentSubscriber = await Subscriber.findOne({ vendorId, email: normalizedEmail }).select(
       "status blockedReason blockedAt"
     );
 
@@ -323,7 +331,7 @@ const storeEmailEvent = async ({
     }
 
     if (["send", "delivery", "open", "click"].includes(eventType)) {
-      await updateSubscriberActivity(normalizedEmail, eventType, timestamp);
+      await updateSubscriberActivity(normalizedEmail, eventType, timestamp, vendorId);
     }
 
     if (shouldCreateSuppression({ eventType, bounceType })) {
@@ -334,6 +342,7 @@ const storeEmailEvent = async ({
           subscriberId,
           eventType,
           timestamp,
+          vendorId,
         }
       );
     }
@@ -352,6 +361,7 @@ const storeEmailEvent = async ({
   } catch (error) {
     if (error.code === 11000) {
       return EmailEvent.findOne({
+        vendorId,
         messageId,
         recipientEmail: normalizedEmail,
         eventType,

@@ -33,6 +33,11 @@ const env = {
     process.env.OPHMATE_INTERNAL_API_URL ||
     process.env.INTERNAL_API_URL ||
     "",
+  sellersloginApiUrl:
+    process.env.SELLERSLOGIN_API_URL ||
+    process.env.OPHMATE_INTERNAL_API_URL ||
+    process.env.INTERNAL_API_URL ||
+    "",
   ophmateInternalEmail:
     process.env.OPHMATE_INTERNAL_EMAIL ||
     process.env.SUPERADMIN_EMAIL ||
@@ -58,6 +63,14 @@ const env = {
     process.env.APP_URL ||
     process.env.CLIENT_URL ||
     "http://localhost:8080",
+  razorpayKeyId:
+    process.env.RAZORPAY_KEY_ID ||
+    process.env.RAZORPAY_TEST_KEY_ID ||
+    "",
+  razorpayKeySecret:
+    process.env.RAZORPAY_KEY_SECRET ||
+    process.env.RAZORPAY_TEST_KEY_SECRET ||
+    "",
 };
 
 const requiredKeys = ["mongoUri", "jwtSecret", "adminEmail", "adminPassword"];

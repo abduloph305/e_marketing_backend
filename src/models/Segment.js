@@ -2,11 +2,16 @@ import mongoose from "mongoose";
 
 const segmentSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     name: {
       type: String,
       required: true,
       trim: true,
-      unique: true,
     },
     description: {
       type: String,
@@ -26,6 +31,8 @@ const segmentSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+segmentSchema.index({ vendorId: 1, name: 1 }, { unique: true });
 
 const Segment = mongoose.models.Segment || mongoose.model("Segment", segmentSchema);
 

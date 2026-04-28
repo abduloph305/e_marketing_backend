@@ -17,6 +17,12 @@ export const campaignRecipientStatuses = [
 
 const campaignRecipientSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     campaignId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "EmailCampaign",
@@ -112,6 +118,7 @@ const campaignRecipientSchema = new mongoose.Schema(
 );
 
 campaignRecipientSchema.index({ campaignId: 1, email: 1 }, { unique: true });
+campaignRecipientSchema.index({ vendorId: 1, email: 1, updatedAt: -1 });
 campaignRecipientSchema.index({ campaignId: 1, convertedAt: -1 });
 campaignRecipientSchema.index({ email: 1, convertedAt: -1 });
 

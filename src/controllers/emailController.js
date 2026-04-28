@@ -4,6 +4,7 @@ import { logCampaignActivity } from "../services/campaignService.js";
 import { sendTestEmail as sendTestEmailThroughSes } from "../services/sesService.js";
 import { sendTransactionalEmail } from "../services/sesService.js";
 import { storeEmailEvent } from "../services/emailEventService.js";
+import { buildVendorMatch } from "../utils/vendorScope.js";
 
 const campaignPopulate = [
   { path: "templateId" },
@@ -22,7 +23,10 @@ const parseEmailList = (value) =>
 
 const sendTestEmail = async (req, res) => {
   try {
-    const campaign = await EmailCampaign.findById(req.params.id).populate(campaignPopulate);
+    const campaign = await EmailCampaign.findOne({
+      _id: req.params.id,
+      ...buildVendorMatch(req),
+    }).populate(campaignPopulate);
 
     if (!campaign || !campaign.templateId) {
       return res.status(404).json({ message: "Campaign or template not found" });
@@ -49,6 +53,7 @@ const sendTestEmail = async (req, res) => {
 
       await storeEmailEvent({
         campaignId: campaign._id,
+        vendorId: campaign.vendorId || "",
         recipientEmail,
         messageId,
         eventType: "send",
@@ -71,7 +76,10 @@ const sendTestEmail = async (req, res) => {
 
 const sendCampaign = async (req, res) => {
   try {
-    const result = await dispatchCampaign(req.params.id, { mode: "manual" });
+    const result = await dispatchCampaign(req.params.id, {
+      mode: "manual",
+      scopeMatch: buildVendorMatch(req),
+    });
     return res.json({
       message: "Campaign send completed",
       sentCount: result.sentCount,

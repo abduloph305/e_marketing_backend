@@ -21,6 +21,12 @@ export const subscriberSources = [
 
 const subscriberSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     firstName: {
       type: String,
       required: true,
@@ -34,7 +40,6 @@ const subscriberSchema = new mongoose.Schema(
     email: {
       type: String,
       required: true,
-      unique: true,
       lowercase: true,
       trim: true,
     },
@@ -148,6 +153,8 @@ subscriberSchema.index({
 });
 
 subscriberSchema.index({ status: 1, country: 1 });
+subscriberSchema.index({ vendorId: 1, email: 1 }, { unique: true });
+subscriberSchema.index({ vendorId: 1, status: 1 });
 subscriberSchema.index({ status: 1, state: 1 });
 subscriberSchema.index({ status: 1, city: 1 });
 subscriberSchema.index({ status: 1, tags: 1 });

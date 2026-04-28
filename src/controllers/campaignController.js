@@ -11,7 +11,9 @@ import {
   dispatchCampaign,
   estimateCampaignRecipientCount,
 } from "../services/campaignDispatchService.js";
+import { notifyVendorActivity } from "../services/adminNotificationService.js";
 import { normalizeRecurrenceInterval, normalizeRecurrenceUnit } from "../utils/campaignRecurrence.js";
+import { buildVendorMatch, withVendorScope, withVendorWrite } from "../utils/vendorScope.js";
 
 const campaignPopulate = [
   { path: "templateId", select: "name subject previewText" },
@@ -144,9 +146,10 @@ const refreshCampaignRecipientEstimate = async (campaignId) => {
   return totalRecipients;
 };
 
-const buildDuplicateCampaignName = async (baseName) => {
+const buildDuplicateCampaignName = async (baseName, scopeMatch = {}) => {
   const escapedName = baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const existingCopies = await EmailCampaign.countDocuments({
+    ...scopeMatch,
     name: new RegExp(`^${escapedName} Copy(?: \\d+)?$`, "i"),
   });
 
@@ -164,7 +167,7 @@ const getCampaignMeta = async (_req, res) => {
 const listCampaigns = async (req, res) => {
   const page = Math.max(Number(req.query.page) || 1, 1);
   const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
-  const match = buildListMatch(req.query);
+  const match = withVendorScope(req, buildListMatch(req.query));
 
   const [campaigns, total] = await Promise.all([
     EmailCampaign.find(match)
@@ -187,7 +190,7 @@ const listCampaigns = async (req, res) => {
 };
 
 const getCampaignById = async (req, res) => {
-  const payload = await buildCampaignDetailPayload(req.params.id);
+  const payload = await buildCampaignDetailPayload(req.params.id, buildVendorMatch(req));
 
   if (!payload) {
     return res.status(404).json({ message: "Campaign not found" });
@@ -198,13 +201,21 @@ const getCampaignById = async (req, res) => {
 
 const createCampaign = async (req, res) => {
   try {
-    const campaign = await EmailCampaign.create(normalizeCampaignPayload(req.body));
+    const campaign = await EmailCampaign.create(withVendorWrite(req, normalizeCampaignPayload(req.body)));
     await refreshCampaignRecipientEstimate(campaign._id);
     await logCampaignActivity(campaign._id, "created", "Campaign created", {
       status: campaign.status,
     });
+    await notifyVendorActivity({
+      actor: req.admin,
+      entityType: "campaign",
+      entityId: campaign._id,
+      action: "created",
+      title: "Campaign created",
+      itemName: campaign.name,
+    });
 
-    const payload = await buildCampaignDetailPayload(campaign._id);
+    const payload = await buildCampaignDetailPayload(campaign._id, buildVendorMatch(req));
     return res.status(201).json(payload);
   } catch (_error) {
     return res.status(400).json({ message: "Unable to create campaign" });
@@ -213,14 +224,15 @@ const createCampaign = async (req, res) => {
 
 const updateCampaign = async (req, res) => {
   try {
-    const existingCampaign = await EmailCampaign.findById(req.params.id);
+    const scopeMatch = buildVendorMatch(req);
+    const existingCampaign = await EmailCampaign.findOne({ _id: req.params.id, ...scopeMatch });
 
     if (!existingCampaign) {
       return res.status(404).json({ message: "Campaign not found" });
     }
 
-    const campaign = await EmailCampaign.findByIdAndUpdate(
-      req.params.id,
+    const campaign = await EmailCampaign.findOneAndUpdate(
+      { _id: req.params.id, ...scopeMatch },
       buildCampaignWritePayload(req.body, existingCampaign),
       {
         returnDocument: "after",
@@ -235,12 +247,20 @@ const updateCampaign = async (req, res) => {
     await logCampaignActivity(campaign._id, "updated", "Campaign updated", {
       status: campaign.status,
     });
+    await notifyVendorActivity({
+      actor: req.admin,
+      entityType: "campaign",
+      entityId: campaign._id,
+      action: "updated",
+      title: "Campaign updated",
+      itemName: campaign.name,
+    });
 
     if (!["sent", "sending"].includes(campaign.status)) {
       await refreshCampaignRecipientEstimate(campaign._id);
     }
 
-    const payload = await buildCampaignDetailPayload(campaign._id);
+    const payload = await buildCampaignDetailPayload(campaign._id, scopeMatch);
     return res.json(payload);
   } catch (_error) {
     return res.status(400).json({ message: "Unable to update campaign" });
@@ -248,31 +268,43 @@ const updateCampaign = async (req, res) => {
 };
 
 const deleteCampaign = async (req, res) => {
-  const campaign = await EmailCampaign.findByIdAndDelete(req.params.id);
+  const scopeMatch = buildVendorMatch(req);
+  const campaign = await EmailCampaign.findOneAndDelete({ _id: req.params.id, ...scopeMatch });
 
   if (!campaign) {
     return res.status(404).json({ message: "Campaign not found" });
   }
 
   await Promise.all([
-    CampaignRecipient.deleteMany({ campaignId: req.params.id }),
-    CampaignActivityLog.deleteMany({ campaignId: req.params.id }),
-    EmailEvent.deleteMany({ campaignId: req.params.id }),
+    CampaignRecipient.deleteMany({ campaignId: req.params.id, ...scopeMatch }),
+    CampaignActivityLog.deleteMany({ campaignId: req.params.id, ...scopeMatch }),
+    EmailEvent.deleteMany({ campaignId: req.params.id, ...scopeMatch }),
   ]);
+
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "campaign",
+    entityId: campaign._id,
+    action: "deleted",
+    title: "Campaign deleted",
+    itemName: campaign.name,
+  });
 
   return res.json({ message: "Campaign deleted" });
 };
 
 const duplicateCampaign = async (req, res) => {
   try {
-    const existingCampaign = await EmailCampaign.findById(req.params.id);
+    const scopeMatch = buildVendorMatch(req);
+    const existingCampaign = await EmailCampaign.findOne({ _id: req.params.id, ...scopeMatch });
 
     if (!existingCampaign) {
       return res.status(404).json({ message: "Campaign not found" });
     }
 
     const duplicate = await EmailCampaign.create({
-      name: await buildDuplicateCampaignName(existingCampaign.name),
+      vendorId: existingCampaign.vendorId || "",
+      name: await buildDuplicateCampaignName(existingCampaign.name, scopeMatch),
       type: existingCampaign.type,
       goal: existingCampaign.goal,
       subject: existingCampaign.subject,
@@ -310,8 +342,16 @@ const duplicateCampaign = async (req, res) => {
         sourceCampaignId: existingCampaign._id,
       }
     );
+    await notifyVendorActivity({
+      actor: req.admin,
+      entityType: "campaign",
+      entityId: duplicate._id,
+      action: "duplicated",
+      title: "Campaign duplicated",
+      itemName: duplicate.name,
+    });
 
-    const payload = await buildCampaignDetailPayload(duplicate._id);
+    const payload = await buildCampaignDetailPayload(duplicate._id, scopeMatch);
     return res.status(201).json(payload);
   } catch (error) {
     return res.status(400).json({
@@ -330,7 +370,10 @@ const scheduleCampaign = async (req, res) => {
 
   if (scheduledAt <= new Date()) {
     try {
-      const result = await dispatchCampaign(req.params.id, { mode: "scheduled" });
+      const result = await dispatchCampaign(req.params.id, {
+        mode: "scheduled",
+        scopeMatch: buildVendorMatch(req),
+      });
       return res.json({
         message: "Campaign sent immediately because the scheduled time is due",
         campaign: result.campaign,
@@ -341,14 +384,15 @@ const scheduleCampaign = async (req, res) => {
     }
   }
 
-  const existingCampaign = await EmailCampaign.findById(req.params.id);
+  const scopeMatch = buildVendorMatch(req);
+  const existingCampaign = await EmailCampaign.findOne({ _id: req.params.id, ...scopeMatch });
 
   if (!existingCampaign) {
     return res.status(404).json({ message: "Campaign not found" });
   }
 
-  const campaign = await EmailCampaign.findByIdAndUpdate(
-    req.params.id,
+  const campaign = await EmailCampaign.findOneAndUpdate(
+    { _id: req.params.id, ...scopeMatch },
     {
       status: "scheduled",
       scheduledAt,
@@ -369,14 +413,23 @@ const scheduleCampaign = async (req, res) => {
   await logCampaignActivity(campaign._id, "scheduled", "Campaign scheduled", {
     scheduledAt: campaign.scheduledAt,
   });
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "campaign",
+    entityId: campaign._id,
+    action: "scheduled",
+    title: "Campaign scheduled",
+    itemName: campaign.name,
+  });
 
-  const payload = await buildCampaignDetailPayload(campaign._id);
+  const payload = await buildCampaignDetailPayload(campaign._id, scopeMatch);
   return res.json(payload);
 };
 
 const pauseCampaign = async (req, res) => {
-  const campaign = await EmailCampaign.findByIdAndUpdate(
-    req.params.id,
+  const scopeMatch = buildVendorMatch(req);
+  const campaign = await EmailCampaign.findOneAndUpdate(
+    { _id: req.params.id, ...scopeMatch },
     { status: "paused" },
     { returnDocument: "after", runValidators: true }
   );
@@ -386,19 +439,28 @@ const pauseCampaign = async (req, res) => {
   }
 
   await logCampaignActivity(campaign._id, "paused", "Campaign paused");
-  const payload = await buildCampaignDetailPayload(campaign._id);
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "campaign",
+    entityId: campaign._id,
+    action: "paused",
+    title: "Campaign paused",
+    itemName: campaign.name,
+  });
+  const payload = await buildCampaignDetailPayload(campaign._id, scopeMatch);
   return res.json(payload);
 };
 
 const resumeCampaign = async (req, res) => {
-  const existingCampaign = await EmailCampaign.findById(req.params.id);
+  const scopeMatch = buildVendorMatch(req);
+  const existingCampaign = await EmailCampaign.findOne({ _id: req.params.id, ...scopeMatch });
 
   if (!existingCampaign) {
     return res.status(404).json({ message: "Campaign not found" });
   }
 
-  const campaign = await EmailCampaign.findByIdAndUpdate(
-    req.params.id,
+  const campaign = await EmailCampaign.findOneAndUpdate(
+    { _id: req.params.id, ...scopeMatch },
     {
       status: existingCampaign.scheduledAt ? "scheduled" : "draft",
     },
@@ -406,13 +468,22 @@ const resumeCampaign = async (req, res) => {
   );
 
   await logCampaignActivity(campaign._id, "resumed", "Campaign resumed");
-  const payload = await buildCampaignDetailPayload(campaign._id);
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "campaign",
+    entityId: campaign._id,
+    action: "resumed",
+    title: "Campaign resumed",
+    itemName: campaign.name,
+  });
+  const payload = await buildCampaignDetailPayload(campaign._id, scopeMatch);
   return res.json(payload);
 };
 
 const archiveCampaign = async (req, res) => {
-  const campaign = await EmailCampaign.findByIdAndUpdate(
-    req.params.id,
+  const scopeMatch = buildVendorMatch(req);
+  const campaign = await EmailCampaign.findOneAndUpdate(
+    { _id: req.params.id, ...scopeMatch },
     { status: "archived" },
     { returnDocument: "after", runValidators: true }
   );
@@ -422,13 +493,22 @@ const archiveCampaign = async (req, res) => {
   }
 
   await logCampaignActivity(campaign._id, "archived", "Campaign archived");
-  const payload = await buildCampaignDetailPayload(campaign._id);
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "campaign",
+    entityId: campaign._id,
+    action: "archived",
+    title: "Campaign archived",
+    itemName: campaign.name,
+  });
+  const payload = await buildCampaignDetailPayload(campaign._id, scopeMatch);
   return res.json(payload);
 };
 
 const markCampaignAsSent = async (req, res) => {
-  const campaign = await EmailCampaign.findByIdAndUpdate(
-    req.params.id,
+  const scopeMatch = buildVendorMatch(req);
+  const campaign = await EmailCampaign.findOneAndUpdate(
+    { _id: req.params.id, ...scopeMatch },
     {
       status: "sent",
       sentAt: req.body.sentAt || new Date(),
@@ -446,8 +526,16 @@ const markCampaignAsSent = async (req, res) => {
   await logCampaignActivity(campaign._id, "sent", "Campaign marked as sent", {
     sentAt: campaign.sentAt,
   });
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "campaign",
+    entityId: campaign._id,
+    action: "marked sent",
+    title: "Campaign marked sent",
+    itemName: campaign.name,
+  });
 
-  const payload = await buildCampaignDetailPayload(campaign._id);
+  const payload = await buildCampaignDetailPayload(campaign._id, scopeMatch);
   return res.json(payload);
 };
 

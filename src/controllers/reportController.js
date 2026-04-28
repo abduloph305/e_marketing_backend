@@ -10,6 +10,7 @@ import {
   summarizeEmailEvents,
 } from "../services/analyticsService.js";
 import { buildDateRangeMatch } from "../utils/dateRange.js";
+import { buildVendorMatch } from "../utils/vendorScope.js";
 
 const summarizeEvents = async (match = {}) => {
   return summarizeEmailEvents(match);
@@ -85,17 +86,18 @@ const buildWindowMatch = (window = {}, field = "createdAt") => {
   );
 };
 
-const getRangeSummary = async (window) => {
+const getRangeSummary = async (window, scopeMatch = {}) => {
   const [events, campaigns, subscribers, suppressions, conversion, growth] = await Promise.all([
-    summarizeEvents(buildWindowMatch(window, "timestamp")),
-    EmailCampaign.countDocuments(buildWindowMatch(window)),
-    Subscriber.countDocuments(buildWindowMatch(window)),
+    summarizeEvents({ ...scopeMatch, ...buildWindowMatch(window, "timestamp") }),
+    EmailCampaign.countDocuments({ ...scopeMatch, ...buildWindowMatch(window) }),
+    Subscriber.countDocuments({ ...scopeMatch, ...buildWindowMatch(window) }),
     SuppressionEntry.countDocuments({
+      ...scopeMatch,
       status: "active",
       ...buildWindowMatch(window),
     }),
-    getConversionSummary(window),
-    getListGrowthSummary(window),
+    getConversionSummary(window, scopeMatch),
+    getListGrowthSummary(window, scopeMatch),
   ]);
 
   return {
@@ -122,8 +124,8 @@ const getRangeSummary = async (window) => {
   };
 };
 
-const getCampaignReportRows = async (window = {}) => {
-  const campaigns = await EmailCampaign.find()
+const getCampaignReportRows = async (window = {}, scopeMatch = {}) => {
+  const campaigns = await EmailCampaign.find(scopeMatch)
     .select("name status type goal totals totalRecipients estimatedCost sentAt scheduledAt")
     .sort({ updatedAt: -1 })
     .limit(8)
@@ -174,9 +176,9 @@ const getCampaignReportRows = async (window = {}) => {
     }));
 };
 
-const getAudienceGrowthReport = async (window = {}) => {
+const getAudienceGrowthReport = async (window = {}, scopeMatch = {}) => {
   const growth = await Subscriber.aggregate([
-    { $match: buildWindowMatch(window) },
+    { $match: { ...scopeMatch, ...buildWindowMatch(window) } },
     {
       $group: {
         _id: {
@@ -194,8 +196,8 @@ const getAudienceGrowthReport = async (window = {}) => {
   }));
 };
 
-const getDeliverabilityReport = async (window = {}) => {
-  const summary = await summarizeEvents(buildWindowMatch(window, "timestamp"));
+const getDeliverabilityReport = async (window = {}, scopeMatch = {}) => {
+  const summary = await summarizeEvents({ ...scopeMatch, ...buildWindowMatch(window, "timestamp") });
   const sent = summary.sent || 0;
 
   return {
@@ -212,6 +214,7 @@ const getDeliverabilityReport = async (window = {}) => {
 
 const getReportsOverview = async (req, res) => {
   const selectedWindow = resolveReportWindow(req.query);
+  const scopeMatch = buildVendorMatch(req);
   const [
     dailySummary,
     weeklySummary,
@@ -224,16 +227,16 @@ const getReportsOverview = async (req, res) => {
     locationBreakdown,
     timeBasedAnalytics,
   ] = await Promise.all([
-    getRangeSummary(resolveReportWindow({ range: "today" })),
-    getRangeSummary(resolveReportWindow({ range: "7d" })),
-    getRangeSummary(resolveReportWindow({ range: "30d" })),
-    getRangeSummary(selectedWindow),
-    getCampaignReportRows(selectedWindow),
-    getAudienceGrowthReport(selectedWindow),
-    getDeliverabilityReport(selectedWindow),
-    getDeviceBreakdown(selectedWindow),
-    getLocationBreakdown(selectedWindow),
-    getTimeBasedAnalytics(selectedWindow),
+    getRangeSummary(resolveReportWindow({ range: "today" }), scopeMatch),
+    getRangeSummary(resolveReportWindow({ range: "7d" }), scopeMatch),
+    getRangeSummary(resolveReportWindow({ range: "30d" }), scopeMatch),
+    getRangeSummary(selectedWindow, scopeMatch),
+    getCampaignReportRows(selectedWindow, scopeMatch),
+    getAudienceGrowthReport(selectedWindow, scopeMatch),
+    getDeliverabilityReport(selectedWindow, scopeMatch),
+    getDeviceBreakdown(selectedWindow, scopeMatch),
+    getLocationBreakdown(selectedWindow, scopeMatch),
+    getTimeBasedAnalytics(selectedWindow, scopeMatch),
   ]);
 
   return res.json({

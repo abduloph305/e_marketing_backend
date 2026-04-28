@@ -91,15 +91,17 @@ const normalizeSesEventPayload = async (body) => {
 
   let campaignId = tags.campaignId?.[0] || null;
   let subscriberId = tags.subscriberId?.[0] || null;
+  let vendorId = "";
 
   if ((!campaignId || !subscriberId) && messageId) {
     const recipient = await CampaignRecipient.findOne({ messageId })
-      .select("campaignId subscriberId email")
+      .select("vendorId campaignId subscriberId email")
       .lean();
 
     if (recipient) {
       campaignId = campaignId || recipient.campaignId || null;
       subscriberId = subscriberId || recipient.subscriberId || null;
+      vendorId = recipient.vendorId || "";
     }
   }
 
@@ -109,6 +111,7 @@ const normalizeSesEventPayload = async (body) => {
   return {
     campaignId,
     subscriberId,
+    vendorId,
     recipientEmail: recipientEmail.toLowerCase(),
     messageId,
     eventType,
@@ -141,6 +144,7 @@ const processSesEventPayload = async (body) => {
   const event = await storeEmailEvent({
     campaignId: normalized.campaignId,
     subscriberId: normalized.subscriberId,
+    vendorId: normalized.vendorId,
     recipientEmail: normalized.recipientEmail,
     messageId: normalized.messageId,
     eventType: normalized.eventType,

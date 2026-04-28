@@ -5,6 +5,9 @@ import {
   normalizeSegmentDefinition,
   summarizeFilter,
 } from "../utils/segmentEngine.js";
+import { notifyVendorActivity } from "../services/adminNotificationService.js";
+import { assertFeatureLimit } from "../services/billingService.js";
+import { buildVendorMatch, getRequestVendorId, withVendorWrite } from "../utils/vendorScope.js";
 
 const segmentCategories = [
   {
@@ -120,12 +123,12 @@ const serializeSegment = (segment, previewCount = 0) => {
   };
 };
 
-const getPreviewData = async (definition = {}) => {
+const getPreviewData = async (definition = {}, scopeMatch = {}) => {
   if (!normalizeSegmentDefinition(definition).filters.length) {
     return [];
   }
 
-  const match = buildSegmentQuery(definition);
+  const match = { ...buildSegmentQuery(definition), ...scopeMatch };
   return Subscriber.find(match)
     .sort({ engagementScore: -1, updatedAt: -1 })
     .limit(5)
@@ -135,12 +138,12 @@ const getPreviewData = async (definition = {}) => {
     .lean();
 };
 
-const getPreviewCount = async (definition = {}) => {
+const getPreviewCount = async (definition = {}, scopeMatch = {}) => {
   if (!normalizeSegmentDefinition(definition).filters.length) {
     return 0;
   }
 
-  const match = buildSegmentQuery(definition);
+  const match = { ...buildSegmentQuery(definition), ...scopeMatch };
   return Subscriber.countDocuments(match);
 };
 
@@ -159,12 +162,13 @@ const getSegmentMeta = async (_req, res) =>
     ],
   });
 
-const listSegments = async (_req, res) => {
-  const segments = await Segment.find().sort({ createdAt: -1 }).lean();
+const listSegments = async (req, res) => {
+  const vendorMatch = buildVendorMatch(req);
+  const segments = await Segment.find(vendorMatch).sort({ createdAt: -1 }).lean();
   const items = await Promise.all(
     segments.map(async (segment) => {
       const definition = normalizeSegmentDefinition(segment.definition || { rules: segment.rules || [] });
-      const previewCount = await getPreviewCount(definition);
+      const previewCount = await getPreviewCount(definition, vendorMatch);
       return serializeSegment({ ...segment, definition }, previewCount);
     }),
   );
@@ -173,7 +177,8 @@ const listSegments = async (_req, res) => {
 };
 
 const getSegmentById = async (req, res) => {
-  const segment = await Segment.findById(req.params.id).lean();
+  const vendorMatch = buildVendorMatch(req);
+  const segment = await Segment.findOne({ _id: req.params.id, ...vendorMatch }).lean();
 
   if (!segment) {
     return res.status(404).json({ message: "Segment not found" });
@@ -182,7 +187,7 @@ const getSegmentById = async (req, res) => {
   const definition = normalizeSegmentDefinition(segment.definition || { rules: segment.rules || [] });
 
   return res.json({
-    ...serializeSegment({ ...segment, definition }, await getPreviewCount(definition)),
+    ...serializeSegment({ ...segment, definition }, await getPreviewCount(definition, vendorMatch)),
   });
 };
 
@@ -205,17 +210,27 @@ const createSegment = async (req, res) => {
       return res.status(400).json({ message: "Add at least one condition" });
     }
 
-    const segment = await Segment.create({
+    await assertFeatureLimit(getRequestVendorId(req), "segments");
+    const vendorMatch = buildVendorMatch(req);
+    const segment = await Segment.create(withVendorWrite(req, {
       name,
       description: req.body.description?.trim() || "",
       definition,
       rules: definition.filters,
+    }));
+    await notifyVendorActivity({
+      actor: req.admin,
+      entityType: "segment",
+      entityId: segment._id,
+      action: "created",
+      title: "Segment created",
+      itemName: segment.name,
     });
 
     return res.status(201).json(
       serializeSegment(
         segment.toObject(),
-        await getPreviewCount(definition),
+        await getPreviewCount(definition, vendorMatch),
       ),
     );
   } catch (error) {
@@ -223,7 +238,7 @@ const createSegment = async (req, res) => {
       return res.status(409).json({ message: "Segment name already exists" });
     }
 
-    return res.status(400).json({ message: "Unable to create segment" });
+    return res.status(error.status || 400).json({ message: error.message || "Unable to create segment" });
   }
 };
 
@@ -246,8 +261,9 @@ const updateSegment = async (req, res) => {
       return res.status(400).json({ message: "Add at least one condition" });
     }
 
-    const segment = await Segment.findByIdAndUpdate(
-      req.params.id,
+    const vendorMatch = buildVendorMatch(req);
+    const segment = await Segment.findOneAndUpdate(
+      { _id: req.params.id, ...vendorMatch },
       {
         name,
         description: req.body.description?.trim() || "",
@@ -264,8 +280,17 @@ const updateSegment = async (req, res) => {
       return res.status(404).json({ message: "Segment not found" });
     }
 
+    await notifyVendorActivity({
+      actor: req.admin,
+      entityType: "segment",
+      entityId: segment._id,
+      action: "updated",
+      title: "Segment updated",
+      itemName: segment.name,
+    });
+
     return res.json(
-      serializeSegment(segment, await getPreviewCount(definition)),
+      serializeSegment(segment, await getPreviewCount(definition, vendorMatch)),
     );
   } catch (error) {
     if (error.code === 11000) {
@@ -277,11 +302,20 @@ const updateSegment = async (req, res) => {
 };
 
 const deleteSegment = async (req, res) => {
-  const segment = await Segment.findByIdAndDelete(req.params.id);
+  const segment = await Segment.findOneAndDelete({ _id: req.params.id, ...buildVendorMatch(req) });
 
   if (!segment) {
     return res.status(404).json({ message: "Segment not found" });
   }
+
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "segment",
+    entityId: segment._id,
+    action: "deleted",
+    title: "Segment deleted",
+    itemName: segment.name,
+  });
 
   return res.json({ message: "Segment deleted" });
 };
@@ -295,9 +329,10 @@ const previewSegment = async (req, res) => {
       },
     );
 
+    const vendorMatch = buildVendorMatch(req);
     const [previewCount, sampleSubscribers] = await Promise.all([
-      getPreviewCount(definition),
-      getPreviewData(definition),
+      getPreviewCount(definition, vendorMatch),
+      getPreviewData(definition, vendorMatch),
     ]);
 
     return res.json({ previewCount, sampleSubscribers });

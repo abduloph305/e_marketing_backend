@@ -9,6 +9,7 @@ import { triggerWorkflowExecutions } from "../services/automationService.js";
 import { syncWebsiteAudience } from "../services/websiteAudienceSyncService.js";
 import { inferDeviceType } from "../utils/device.js";
 import { buildSubscriberMatch } from "../utils/subscriberFilters.js";
+import { buildVendorMatch, withVendorScope, withVendorWrite } from "../utils/vendorScope.js";
 
 const normalizeTags = (tags = []) =>
   Array.from(
@@ -250,9 +251,10 @@ const buildDetailPayload = async (subscriber) => {
     return null;
   }
 
+  const vendorMatch = subscriber.vendorId ? { vendorId: subscriber.vendorId } : {};
   const [recentEmailEvents, latestOpenEvent, latestClickEvent, campaignHistory, suppressionEntry] =
     await Promise.all([
-      EmailEvent.find({ recipientEmail: subscriber.email })
+      EmailEvent.find({ ...vendorMatch, recipientEmail: subscriber.email })
         .sort({ timestamp: -1 })
         .limit(12)
         .select(
@@ -260,6 +262,7 @@ const buildDetailPayload = async (subscriber) => {
         )
         .lean(),
       EmailEvent.findOne({
+        ...vendorMatch,
         recipientEmail: subscriber.email,
         eventType: "open",
       })
@@ -267,18 +270,19 @@ const buildDetailPayload = async (subscriber) => {
         .select("timestamp deviceType userAgent")
         .lean(),
       EmailEvent.findOne({
+        ...vendorMatch,
         recipientEmail: subscriber.email,
         eventType: "click",
       })
         .sort({ timestamp: -1 })
         .select("timestamp deviceType userAgent")
         .lean(),
-      CampaignRecipient.find({ email: subscriber.email })
+      CampaignRecipient.find({ ...vendorMatch, email: subscriber.email })
         .sort({ updatedAt: -1 })
         .limit(12)
         .populate({ path: "campaignId", select: "name status subject" })
         .lean(),
-      SuppressionEntry.findOne({ email: subscriber.email }).lean(),
+      SuppressionEntry.findOne({ ...vendorMatch, email: subscriber.email }).lean(),
     ]);
 
   return {
@@ -337,15 +341,18 @@ const getSubscriberMeta = async (_req, res) =>
     sources: subscriberSources,
   });
 
-const getSubscriberSummary = async (_req, res) => {
+const getSubscriberSummary = async (req, res) => {
   try {
     await runBestEffortCleanup();
+    const vendorMatch = buildVendorMatch(req);
 
     const [statusCounts, totals, sourceDocs] = await Promise.all([
       Subscriber.aggregate([
+        { $match: vendorMatch },
         { $group: { _id: "$status", count: { $sum: 1 } } },
       ]),
       Subscriber.aggregate([
+        { $match: vendorMatch },
         {
           $group: {
             _id: null,
@@ -356,7 +363,7 @@ const getSubscriberSummary = async (_req, res) => {
           },
         },
       ]),
-      Subscriber.find({})
+      Subscriber.find(vendorMatch)
         .select("source sourceLocation customFields")
         .lean(),
     ]);
@@ -417,7 +424,7 @@ const listSubscribers = async (req, res) => {
 
   const page = Math.max(Number(req.query.page) || 1, 1);
   const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
-  const match = buildSubscriberMatch(req.query);
+  const match = withVendorScope(req, buildSubscriberMatch(req.query));
 
   const [subscribers, total] = await Promise.all([
     Subscriber.find(match)
@@ -444,7 +451,7 @@ const listSubscribers = async (req, res) => {
 const filterSubscribers = async (req, res) => {
   const page = Math.max(Number(req.body.page) || 1, 1);
   const limit = Math.min(Math.max(Number(req.body.limit) || 10, 1), 100);
-  const match = buildSubscriberMatch(req.body);
+  const match = withVendorScope(req, buildSubscriberMatch(req.body));
 
   const [subscribers, total] = await Promise.all([
     Subscriber.find(match)
@@ -469,7 +476,7 @@ const filterSubscribers = async (req, res) => {
 };
 
 const getSubscriberById = async (req, res) => {
-  const subscriber = await Subscriber.findById(req.params.id);
+  const subscriber = await Subscriber.findOne({ _id: req.params.id, ...buildVendorMatch(req) });
 
   if (!subscriber) {
     return res.status(404).json({ message: "Subscriber not found" });
@@ -481,7 +488,7 @@ const getSubscriberById = async (req, res) => {
 const createSubscriber = async (req, res) => {
   try {
     const subscriber = await Subscriber.create(
-      normalizeSubscriberPayload(req.body),
+      withVendorWrite(req, normalizeSubscriberPayload(req.body)),
     );
 
     triggerWorkflowExecutions({
@@ -489,6 +496,7 @@ const createSubscriber = async (req, res) => {
       subscriberId: subscriber._id,
       context: {
         source: "subscriber.created",
+        vendorId: subscriber.vendorId || "",
       },
     }).catch((error) => {
       console.error("Unable to trigger welcome_signup automation", error);
@@ -510,7 +518,8 @@ const createSubscriber = async (req, res) => {
 
 const updateSubscriber = async (req, res) => {
   try {
-    const existingSubscriber = await Subscriber.findById(req.params.id).lean();
+    const vendorMatch = buildVendorMatch(req);
+    const existingSubscriber = await Subscriber.findOne({ _id: req.params.id, ...vendorMatch }).lean();
 
     if (!existingSubscriber) {
       return res.status(404).json({ message: "Subscriber not found" });
@@ -543,8 +552,8 @@ const updateSubscriber = async (req, res) => {
       nextPayload.blockedAt = null;
     }
 
-    const subscriber = await Subscriber.findByIdAndUpdate(
-      req.params.id,
+    const subscriber = await Subscriber.findOneAndUpdate(
+      { _id: req.params.id, ...vendorMatch },
       nextPayload,
       {
         returnDocument: "after",
@@ -567,7 +576,7 @@ const updateSubscriber = async (req, res) => {
 };
 
 const deleteSubscriber = async (req, res) => {
-  const subscriber = await Subscriber.findByIdAndDelete(req.params.id);
+  const subscriber = await Subscriber.findOneAndDelete({ _id: req.params.id, ...buildVendorMatch(req) });
 
   if (!subscriber) {
     return res.status(404).json({ message: "Subscriber not found" });
@@ -587,7 +596,7 @@ const bulkTagSubscribers = async (req, res) => {
   }
 
   await Subscriber.updateMany(
-    { _id: { $in: subscriberIds } },
+    { _id: { $in: subscriberIds }, ...buildVendorMatch(req) },
     { $addToSet: { tags: { $each: tags } } },
   );
 
@@ -604,21 +613,23 @@ const bulkUnsubscribeSubscribers = async (req, res) => {
     return res.status(400).json({ message: "Subscriber ids are required" });
   }
 
-  const subscribers = await Subscriber.find({ _id: { $in: subscriberIds } });
+  const vendorMatch = buildVendorMatch(req);
+  const subscribers = await Subscriber.find({ _id: { $in: subscriberIds }, ...vendorMatch });
   const eligibleSubscribers = subscribers.filter(
     (subscriber) => !(subscriber.status === "blocked" && subscriber.blockedReason === "spam"),
   );
 
   await Subscriber.updateMany(
-    { _id: { $in: eligibleSubscribers.map((subscriber) => subscriber._id) } },
+    { _id: { $in: eligibleSubscribers.map((subscriber) => subscriber._id) }, ...vendorMatch },
     { status: "unsubscribed", blockedReason: "", blockedAt: null },
   );
 
   await Promise.all(
     eligibleSubscribers.map((subscriber) =>
       SuppressionEntry.findOneAndUpdate(
-        { email: subscriber.email },
+        { ...vendorMatch, email: subscriber.email },
         {
+          ...vendorMatch,
           email: subscriber.email,
           reason: "unsubscribe",
           source: "admin",
@@ -642,21 +653,23 @@ const bulkSuppressSubscribers = async (req, res) => {
     return res.status(400).json({ message: "Subscriber ids are required" });
   }
 
-  const subscribers = await Subscriber.find({ _id: { $in: subscriberIds } });
+  const vendorMatch = buildVendorMatch(req);
+  const subscribers = await Subscriber.find({ _id: { $in: subscriberIds }, ...vendorMatch });
   const eligibleSubscribers = subscribers.filter(
     (subscriber) => !(subscriber.status === "blocked" && subscriber.blockedReason === "spam"),
   );
 
   await Subscriber.updateMany(
-    { _id: { $in: eligibleSubscribers.map((subscriber) => subscriber._id) } },
+    { _id: { $in: eligibleSubscribers.map((subscriber) => subscriber._id) }, ...vendorMatch },
     { status: "suppressed", blockedReason: "", blockedAt: null },
   );
 
   await Promise.all(
     eligibleSubscribers.map((subscriber) =>
       SuppressionEntry.findOneAndUpdate(
-        { email: subscriber.email },
+        { ...vendorMatch, email: subscriber.email },
         {
+          ...vendorMatch,
           email: subscriber.email,
           reason: "manual",
           source: "admin",
@@ -680,19 +693,20 @@ const bulkReactivateSubscribers = async (req, res) => {
     return res.status(400).json({ message: "Subscriber ids are required" });
   }
 
-  const subscribers = await Subscriber.find({ _id: { $in: subscriberIds } });
+  const vendorMatch = buildVendorMatch(req);
+  const subscribers = await Subscriber.find({ _id: { $in: subscriberIds }, ...vendorMatch });
   const eligibleSubscribers = subscribers.filter(
     (subscriber) => !(subscriber.status === "blocked" && subscriber.blockedReason === "spam"),
   );
   const emails = eligibleSubscribers.map((subscriber) => subscriber.email);
 
   await Subscriber.updateMany(
-    { _id: { $in: eligibleSubscribers.map((subscriber) => subscriber._id) } },
+    { _id: { $in: eligibleSubscribers.map((subscriber) => subscriber._id) }, ...vendorMatch },
     { status: "subscribed", blockedReason: "", blockedAt: null },
   );
 
   if (emails.length) {
-    await SuppressionEntry.deleteMany({ email: { $in: emails } });
+    await SuppressionEntry.deleteMany({ ...vendorMatch, email: { $in: emails } });
   }
 
   return res.json({
@@ -711,6 +725,7 @@ const importSubscribersFromCsv = async (req, res) => {
 
   let importedCount = 0;
   let updatedCount = 0;
+  const vendorMatch = buildVendorMatch(req);
 
   for (const row of rows) {
     const payload = normalizeSubscriberPayload({
@@ -724,16 +739,17 @@ const importSubscribersFromCsv = async (req, res) => {
       continue;
     }
 
-    const existing = await Subscriber.findOne({ email: payload.email });
+    const scopedPayload = withVendorWrite(req, payload);
+    const existing = await Subscriber.findOne({ ...vendorMatch, email: payload.email });
 
     if (existing) {
-      await Subscriber.findByIdAndUpdate(existing._id, payload, {
+      await Subscriber.findByIdAndUpdate(existing._id, scopedPayload, {
         returnDocument: "after",
         runValidators: true,
       });
       updatedCount += 1;
     } else {
-      await Subscriber.create(payload);
+      await Subscriber.create(scopedPayload);
       importedCount += 1;
     }
   }

@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 const integrationEventSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     source: {
       type: String,
       required: true,
@@ -63,7 +69,7 @@ const integrationEventSchema = new mongoose.Schema(
 );
 
 integrationEventSchema.index(
-  { source: 1, sourceEventId: 1 },
+  { vendorId: 1, source: 1, sourceEventId: 1 },
   { unique: true, sparse: true },
 );
 

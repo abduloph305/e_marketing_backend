@@ -3,7 +3,10 @@ import bcrypt from "bcryptjs";
 import Admin from "../models/Admin.js";
 import { rolePermissions } from "../config/roles.js";
 import { env } from "../config/env.js";
+import { notifyVendorActivity } from "../services/adminNotificationService.js";
+import { assertFeatureLimit } from "../services/billingService.js";
 import { sendTransactionalEmail } from "../services/sesService.js";
+import { getRequestVendorId } from "../utils/vendorScope.js";
 
 const allowedPermissions = new Set(rolePermissions.super_admin);
 
@@ -105,8 +108,15 @@ const buildInviteEmailHtml = ({
   `;
 };
 
-const listTeamUsers = async (_req, res) => {
-  const users = await Admin.find({ role: { $ne: "super_admin" } }).sort({
+const listTeamUsers = async (req, res) => {
+  const vendorId = getRequestVendorId(req);
+  const match = { role: { $ne: "super_admin" } };
+
+  if (vendorId) {
+    match.sellersloginVendorId = vendorId;
+  }
+
+  const users = await Admin.find(match).sort({
     createdAt: -1,
   });
 
@@ -123,6 +133,7 @@ const saveTeamUser = async (req, res) => {
   const selectedPermissions = normalizePermissions(permissions);
   const dashboardUrl = `${env.clientUrl.replace(/\/$/, "")}/login`;
   const password = generatePassword();
+  const vendorId = getRequestVendorId(req);
 
   if (!normalizedName) {
     return res.status(400).json({ message: "Name is required" });
@@ -138,6 +149,14 @@ const saveTeamUser = async (req, res) => {
     return res.status(409).json({ message: "This email belongs to the main admin account" });
   }
 
+  if (existing && vendorId && existing.sellersloginVendorId && existing.sellersloginVendorId !== vendorId) {
+    return res.status(409).json({ message: "This email belongs to another workspace" });
+  }
+
+  if (!existing && vendorId) {
+    await assertFeatureLimit(vendorId, "teamMembers");
+  }
+
   const nextPasswordHash = await bcrypt.hash(password, 10);
 
   let user;
@@ -150,6 +169,8 @@ const saveTeamUser = async (req, res) => {
           name: normalizedName,
           email: normalizedEmail,
           role: role === "super_admin" ? "team_member" : role,
+          sellersloginVendorId: existing.sellersloginVendorId || vendorId,
+          businessName: existing.businessName || req.admin?.businessName || "",
           permissions: selectedPermissions,
           accountStatus,
           invitedAt: existing.invitedAt || new Date(),
@@ -168,6 +189,8 @@ const saveTeamUser = async (req, res) => {
       email: normalizedEmail,
       password: nextPasswordHash,
       role: role === "super_admin" ? "team_member" : role,
+      sellersloginVendorId: vendorId,
+      businessName: req.admin?.businessName || "",
       permissions: selectedPermissions,
       accountStatus,
       invitedAt: new Date(),
@@ -202,6 +225,15 @@ const saveTeamUser = async (req, res) => {
     console.error("Invite email failed", error);
   }
 
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "team_member",
+    entityId: user._id,
+    action: existing ? "updated" : "created",
+    title: existing ? "Team access updated" : "Team member invited",
+    itemName: user.name,
+  });
+
   return res.status(existing ? 200 : 201).json({
     message: existing ? "Team access updated" : "Team access created",
     user: user.toSafeObject(),
@@ -227,6 +259,11 @@ const updateTeamUser = async (req, res) => {
   const normalizedEmail = String(email || user.email || "").trim().toLowerCase();
   const normalizedName = String(name || user.name || "").trim();
   const selectedPermissions = normalizePermissions(permissions);
+  const vendorId = getRequestVendorId(req);
+
+  if (vendorId && user.sellersloginVendorId !== vendorId) {
+    return res.status(404).json({ message: "User not found" });
+  }
 
   const emailChanged = normalizedEmail !== user.email;
   if (emailChanged) {
@@ -243,6 +280,7 @@ const updateTeamUser = async (req, res) => {
         name: normalizedName,
         email: normalizedEmail,
         role: role === "super_admin" ? "team_member" : role,
+        sellersloginVendorId: user.sellersloginVendorId || vendorId,
         permissions: selectedPermissions,
         accountStatus: status === "inactive" ? "inactive" : "active",
         invitedAt: user.invitedAt || new Date(),
@@ -254,6 +292,15 @@ const updateTeamUser = async (req, res) => {
     },
   );
 
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "team_member",
+    entityId: updatedUser._id,
+    action: "updated",
+    title: "Team access updated",
+    itemName: updatedUser.name,
+  });
+
   return res.json({
     message: "Team access updated",
     user: updatedUser.toSafeObject(),
@@ -264,8 +311,13 @@ const deactivateTeamUser = async (req, res) => {
   const { id } = req.params;
 
   const user = await Admin.findById(id);
+  const vendorId = getRequestVendorId(req);
 
   if (!user) {
+    return res.status(404).json({ message: "User not found" });
+  }
+
+  if (vendorId && user.sellersloginVendorId !== vendorId) {
     return res.status(404).json({ message: "User not found" });
   }
 
@@ -275,6 +327,15 @@ const deactivateTeamUser = async (req, res) => {
 
   user.accountStatus = "inactive";
   await user.save();
+
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "team_member",
+    entityId: user._id,
+    action: "deactivated",
+    title: "Team access deactivated",
+    itemName: user.name,
+  });
 
   return res.json({
     message: "Team access deactivated",

@@ -15,6 +15,12 @@ export const emailEventTypes = [
 
 const emailEventSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     campaignId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "EmailCampaign",
@@ -115,9 +121,10 @@ const emailEventSchema = new mongoose.Schema(
 );
 
 emailEventSchema.index(
-  { messageId: 1, recipientEmail: 1, eventType: 1, timestamp: 1 },
+  { vendorId: 1, messageId: 1, recipientEmail: 1, eventType: 1, timestamp: 1 },
   { unique: true }
 );
+emailEventSchema.index({ vendorId: 1, eventType: 1, timestamp: -1 });
 emailEventSchema.index({ eventType: 1, timestamp: -1 });
 emailEventSchema.index({ subscriberId: 1, eventType: 1, timestamp: -1 });
 emailEventSchema.index({ recipientEmail: 1, eventType: 1, timestamp: -1 });

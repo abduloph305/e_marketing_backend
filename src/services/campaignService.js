@@ -4,13 +4,17 @@ import EmailCampaign from "../models/EmailCampaign.js";
 import EmailEvent from "../models/EmailEvent.js";
 import mongoose from "mongoose";
 
-const logCampaignActivity = async (campaignId, type, message, metadata = null) =>
-  CampaignActivityLog.create({
+const logCampaignActivity = async (campaignId, type, message, metadata = null) => {
+  const campaign = await EmailCampaign.findById(campaignId).select("vendorId").lean();
+
+  return CampaignActivityLog.create({
+    vendorId: campaign?.vendorId || "",
     campaignId,
     type,
     message,
     metadata,
   });
+};
 
 const recipientEventConfig = {
   send: { status: "sent", dateField: "sentAt" },
@@ -37,6 +41,7 @@ const updateCampaignRecipientStatus = async ({
   messageId,
   eventType,
   timestamp,
+  vendorId = "",
 }) => {
   const eventConfig = recipientEventConfig[eventType];
 
@@ -44,10 +49,11 @@ const updateCampaignRecipientStatus = async ({
     return null;
   }
 
+  const vendorMatch = vendorId ? { vendorId } : {};
   const match = messageId
-    ? { messageId }
+    ? { messageId, ...vendorMatch }
     : campaignId && recipientEmail
-      ? { campaignId, email: recipientEmail }
+      ? { campaignId, email: recipientEmail, ...vendorMatch }
       : null;
 
   if (!match) {
@@ -64,6 +70,10 @@ const updateCampaignRecipientStatus = async ({
 
   if (campaignId) {
     updates.campaignId = campaignId;
+  }
+
+  if (vendorId) {
+    updates.vendorId = vendorId;
   }
 
   if (subscriberId) {
@@ -286,8 +296,8 @@ const attributeCampaignConversion = async ({
   return updatedRecipient;
 };
 
-const buildCampaignDetailPayload = async (campaignId) => {
-  const campaign = await EmailCampaign.findById(campaignId)
+const buildCampaignDetailPayload = async (campaignId, scopeMatch = {}) => {
+  const campaign = await EmailCampaign.findOne({ _id: campaignId, ...scopeMatch })
     .populate({ path: "templateId", select: "name subject previewText" })
     .populate({ path: "segmentId", select: "name" });
 
@@ -296,23 +306,24 @@ const buildCampaignDetailPayload = async (campaignId) => {
   }
 
   const campaignObjectId = new mongoose.Types.ObjectId(String(campaign._id));
+  const vendorMatch = campaign.vendorId ? { vendorId: campaign.vendorId } : {};
 
   const [activityTimeline, recipientProgress, recentEvents, topLinks, clickMapRows, trendRows] = await Promise.all([
-    CampaignActivityLog.find({ campaignId }).sort({ createdAt: -1 }).limit(20).lean(),
-    CampaignRecipient.find({ campaignId })
+    CampaignActivityLog.find({ campaignId, ...vendorMatch }).sort({ createdAt: -1 }).limit(20).lean(),
+    CampaignRecipient.find({ campaignId, ...vendorMatch })
       .sort({ updatedAt: -1 })
       .limit(20)
       .select(
         "email status sentAt deliveredAt openedAt clickedAt bouncedAt complainedAt unsubscribedAt convertedAt lastConvertedAt lastConversionSourceId lastConversionSourceType conversionCount revenueAttributed"
       )
       .lean(),
-    EmailEvent.find({ campaignId })
+    EmailEvent.find({ campaignId, ...vendorMatch })
       .sort({ timestamp: -1 })
       .limit(12)
       .select("recipientEmail eventType timestamp clickedLink blockId section ctaType bounceType complaintFeedbackType deviceType ipAddress")
       .lean(),
     EmailEvent.aggregate([
-      { $match: { campaignId: campaignObjectId, eventType: "click", clickedLink: { $ne: "" } } },
+      { $match: { campaignId: campaignObjectId, ...vendorMatch, eventType: "click", clickedLink: { $ne: "" } } },
       {
         $group: {
           _id: "$clickedLink",
@@ -326,6 +337,7 @@ const buildCampaignDetailPayload = async (campaignId) => {
       {
         $match: {
           campaignId: campaignObjectId,
+          ...vendorMatch,
           eventType: "click",
         },
       },
@@ -360,7 +372,7 @@ const buildCampaignDetailPayload = async (campaignId) => {
       { $sort: { totalClicks: -1 } },
     ]),
     EmailEvent.aggregate([
-      { $match: { campaignId: campaignObjectId, eventType: { $in: ["send", "delivery", "open", "click"] } } },
+      { $match: { campaignId: campaignObjectId, ...vendorMatch, eventType: { $in: ["send", "delivery", "open", "click"] } } },
       {
         $group: {
           _id: {

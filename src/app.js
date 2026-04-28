@@ -3,7 +3,10 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import path from "path";
 import authRoutes from "./routes/authRoutes.js";
+import adminDashboardRoutes from "./routes/adminDashboardRoutes.js";
+import adminNotificationRoutes from "./routes/adminNotificationRoutes.js";
 import automationRoutes from "./routes/automationRoutes.js";
+import billingRoutes from "./routes/billingRoutes.js";
 import campaignRoutes from "./routes/campaignRoutes.js";
 import emailRoutes from "./routes/emailRoutes.js";
 import eventRoutes from "./routes/eventRoutes.js";
@@ -46,6 +49,9 @@ app.get("/api", (_req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
+app.use("/api/admin-dashboard", adminDashboardRoutes);
+app.use("/api/admin-notifications", adminNotificationRoutes);
+app.use("/api/billing", billingRoutes);
 app.use("/api/automations", automationRoutes);
 app.use("/api/email", emailRoutes);
 app.use("/api/events", eventRoutes);

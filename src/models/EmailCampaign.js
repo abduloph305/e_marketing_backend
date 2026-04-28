@@ -40,6 +40,12 @@ const totalsSchema = new mongoose.Schema(
 
 const emailCampaignSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     name: {
       type: String,
       required: true,
@@ -179,6 +185,7 @@ emailCampaignSchema.virtual("totalComplaints").get(function totalComplaints() {
 
 emailCampaignSchema.set("toJSON", { virtuals: true });
 emailCampaignSchema.set("toObject", { virtuals: true });
+emailCampaignSchema.index({ vendorId: 1, status: 1, updatedAt: -1 });
 
 const EmailCampaign =
   mongoose.models.EmailCampaign ||

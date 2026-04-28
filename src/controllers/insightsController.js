@@ -3,6 +3,7 @@ import EmailEvent from "../models/EmailEvent.js";
 import SuppressionEntry from "../models/SuppressionEntry.js";
 import { getAnalyticsSnapshot } from "../services/analyticsService.js";
 import { buildDateRangeMatch } from "../utils/dateRange.js";
+import { buildVendorMatch, withVendorScope } from "../utils/vendorScope.js";
 
 const eventCountConfig = {
   send: "sent",
@@ -96,6 +97,7 @@ const summarizeEvents = async (match = {}, options = {}) => {
 
   if (options.includeSuppressedCount) {
     summary.suppressedCount = await SuppressionEntry.countDocuments({
+      ...options.vendorMatch,
       status: "active",
       ...buildDateRangeMatch(options.startDate, options.endDate),
     });
@@ -406,7 +408,11 @@ const getRecentEventsList = async (match = {}, limit = 6) =>
     .lean();
 
 const getOverviewAnalytics = async (req, res) => {
-  const match = buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp");
+  const vendorMatch = buildVendorMatch(req);
+  const match = withVendorScope(
+    req,
+    buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp"),
+  );
   const [
     summary,
     uniqueCounts,
@@ -423,12 +429,13 @@ const getOverviewAnalytics = async (req, res) => {
     getRecentEventsList(match),
     getCampaignPerformance(match, 5),
     SuppressionEntry.countDocuments({
+      ...vendorMatch,
       reason: "unsubscribe",
       status: "active",
       ...buildDateRangeMatch(req.query.startDate, req.query.endDate),
     }),
     getTrendData(match, req.query.startDate, req.query.endDate),
-    getAnalyticsSnapshot(req.query),
+    getAnalyticsSnapshot(req.query, vendorMatch),
   ]);
 
   return res.json({
@@ -471,13 +478,15 @@ const getOverviewAnalytics = async (req, res) => {
 };
 
 const getAnalyticsSummary = async (req, res) => {
-  const analyticsSnapshot = await getAnalyticsSnapshot(req.query);
+  const vendorMatch = buildVendorMatch(req);
+  const analyticsSnapshot = await getAnalyticsSnapshot(req.query, vendorMatch);
   const summary = analyticsSnapshot.summary;
 
-  const campaignsCount = await EmailCampaign.countDocuments();
-  const suppressionsCount = await SuppressionEntry.countDocuments(
-    buildDateRangeMatch(req.query.startDate, req.query.endDate)
-  );
+  const campaignsCount = await EmailCampaign.countDocuments(vendorMatch);
+  const suppressionsCount = await SuppressionEntry.countDocuments({
+    ...vendorMatch,
+    ...buildDateRangeMatch(req.query.startDate, req.query.endDate),
+  });
 
   return res.json({
     ...summary,
@@ -503,18 +512,26 @@ const getAnalyticsSummary = async (req, res) => {
 };
 
 const getDeliverabilitySummary = async (req, res) => {
-  const match = buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp");
+  const vendorMatch = buildVendorMatch(req);
+  const match = withVendorScope(
+    req,
+    buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp"),
+  );
   const summary = await summarizeEvents(match, {
     includeSuppressedCount: true,
     startDate: req.query.startDate,
     endDate: req.query.endDate,
+    vendorMatch,
   });
 
   return res.json(summary);
 };
 
 const getBounceComplaintBreakdown = async (req, res) => {
-  const match = buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp");
+  const match = withVendorScope(
+    req,
+    buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp"),
+  );
 
   const [bounceSubtypeRows, complaintFeedbackRows, complaintTrend] = await Promise.all([
     EmailEvent.aggregate([
@@ -593,7 +610,10 @@ const getBounceComplaintBreakdown = async (req, res) => {
 };
 
 const getCampaignDeliverability = async (req, res) => {
-  const match = buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp");
+  const match = withVendorScope(
+    req,
+    buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp"),
+  );
   const search = req.query.search?.trim();
   const status = req.query.status?.trim();
   const { campaignRows } = await getCampaignPerformance(match, 50);
@@ -622,11 +642,16 @@ const getCampaignDeliverability = async (req, res) => {
 };
 
 const getSenderHealthSummary = async (req, res) => {
-  const match = buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp");
+  const vendorMatch = buildVendorMatch(req);
+  const match = withVendorScope(
+    req,
+    buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp"),
+  );
   const summary = await summarizeEvents(match, {
     includeSuppressedCount: true,
     startDate: req.query.startDate,
     endDate: req.query.endDate,
+    vendorMatch,
   });
   const senderHealth = buildSenderHealth(summary);
 
@@ -665,6 +690,7 @@ const getRecentEvents = async (req, res) => {
   const search = req.query.search?.trim();
 
   const match = {
+    ...buildVendorMatch(req),
     ...buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp"),
   };
 
@@ -694,7 +720,10 @@ const getRecentEvents = async (req, res) => {
 
 const getTopCampaigns = async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 5, 1), 20);
-  const match = buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp");
+  const match = withVendorScope(
+    req,
+    buildDateRangeMatch(req.query.startDate, req.query.endDate, "timestamp"),
+  );
   const { topCampaigns } = await getCampaignPerformance(match, limit);
 
   return res.json(topCampaigns);

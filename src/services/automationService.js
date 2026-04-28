@@ -44,8 +44,11 @@ const logAutomationEvent = async (
   message,
   metadata = {},
   options = {}
-) =>
-  AutomationLog.create({
+) => {
+  const workflow = await AutomationWorkflow.findById(workflowId).select("vendorId").lean();
+
+  return AutomationLog.create({
+    vendorId: workflow?.vendorId || "",
     workflowId,
     executionId: options.executionId || null,
     level: options.level || "info",
@@ -53,9 +56,13 @@ const logAutomationEvent = async (
     message,
     metadata,
   });
+};
 
 const replaceWorkflowSteps = async (workflowId, steps = []) => {
-  await AutomationStep.deleteMany({ workflowId });
+  const workflow = await AutomationWorkflow.findById(workflowId).select("vendorId").lean();
+  const vendorMatch = workflow?.vendorId ? { vendorId: workflow.vendorId } : {};
+
+  await AutomationStep.deleteMany({ workflowId, ...vendorMatch });
 
   const normalizedSteps = normalizeSteps(steps);
 
@@ -65,6 +72,7 @@ const replaceWorkflowSteps = async (workflowId, steps = []) => {
 
   return AutomationStep.insertMany(
     normalizedSteps.map((step) => ({
+      ...vendorMatch,
       workflowId,
       ...step,
     }))
@@ -76,10 +84,11 @@ const buildWorkflowSummary = async (workflow) => {
     return null;
   }
 
+  const vendorMatch = workflow.vendorId ? { vendorId: workflow.vendorId } : {};
   const [stepCount, executionStats, lastLog] = await Promise.all([
-    AutomationStep.countDocuments({ workflowId: workflow._id }),
+    AutomationStep.countDocuments({ workflowId: workflow._id, ...vendorMatch }),
     AutomationExecution.aggregate([
-      { $match: { workflowId: workflow._id } },
+      { $match: { workflowId: workflow._id, ...vendorMatch } },
       {
         $group: {
           _id: "$status",
@@ -87,7 +96,7 @@ const buildWorkflowSummary = async (workflow) => {
         },
       },
     ]),
-    AutomationLog.findOne({ workflowId: workflow._id }).sort({ createdAt: -1 }).lean(),
+    AutomationLog.findOne({ workflowId: workflow._id, ...vendorMatch }).sort({ createdAt: -1 }).lean(),
   ]);
 
   const stats = executionStats.reduce(
@@ -106,8 +115,8 @@ const buildWorkflowSummary = async (workflow) => {
   };
 };
 
-const buildWorkflowDetailPayload = async (workflowId) => {
-  const workflow = await AutomationWorkflow.findById(workflowId).populate({
+const buildWorkflowDetailPayload = async (workflowId, scopeMatch = {}) => {
+  const workflow = await AutomationWorkflow.findOne({ _id: workflowId, ...scopeMatch }).populate({
     path: "entrySegmentId",
     select: "name definition rules",
   });
@@ -116,14 +125,15 @@ const buildWorkflowDetailPayload = async (workflowId) => {
     return null;
   }
 
+  const vendorMatch = workflow.vendorId ? { vendorId: workflow.vendorId } : {};
   const [steps, executions, logs] = await Promise.all([
-    AutomationStep.find({ workflowId }).sort({ order: 1 }).lean(),
-    AutomationExecution.find({ workflowId })
+    AutomationStep.find({ workflowId, ...vendorMatch }).sort({ order: 1 }).lean(),
+    AutomationExecution.find({ workflowId, ...vendorMatch })
       .populate({ path: "subscriberId", select: "firstName lastName email status tags engagementScore" })
       .sort({ createdAt: -1 })
       .limit(8)
       .lean(),
-    AutomationLog.find({ workflowId }).sort({ createdAt: -1 }).limit(12).lean(),
+    AutomationLog.find({ workflowId, ...vendorMatch }).sort({ createdAt: -1 }).limit(12).lean(),
   ]);
 
   const summary = await buildWorkflowSummary(workflow);
@@ -438,7 +448,10 @@ const createWorkflowExecution = async ({
   trigger,
   context = {},
 }) => {
+  const workflow = await AutomationWorkflow.findById(workflowId).select("vendorId").lean();
+  const vendorId = workflow?.vendorId || "";
   const execution = await AutomationExecution.create({
+    vendorId,
     workflowId,
     subscriberId,
     trigger,
@@ -726,7 +739,13 @@ const triggerWorkflowExecutions = async ({
     return [];
   }
 
+  const subscriber = subscriberId
+    ? await Subscriber.findById(subscriberId).lean()
+    : null;
+  const vendorMatch = subscriber?.vendorId ? { vendorId: subscriber.vendorId } : {};
+
   const workflows = await AutomationWorkflow.find({
+    ...vendorMatch,
     trigger,
     status: "active",
     isActive: true,
@@ -735,10 +754,6 @@ const triggerWorkflowExecutions = async ({
   if (!workflows.length) {
     return [];
   }
-
-  const subscriber = subscriberId
-    ? await Subscriber.findById(subscriberId).lean()
-    : null;
 
   const results = [];
 
@@ -753,6 +768,7 @@ const triggerWorkflowExecutions = async ({
       trigger,
       context: {
         ...context,
+        ...vendorMatch,
         trigger,
       },
     });

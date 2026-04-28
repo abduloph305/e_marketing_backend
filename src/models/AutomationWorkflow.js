@@ -23,6 +23,12 @@ export const automationWorkflowStatuses = ["draft", "active", "inactive", "archi
 
 const automationWorkflowSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     name: {
       type: String,
       required: true,

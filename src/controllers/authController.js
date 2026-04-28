@@ -1,6 +1,9 @@
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import Admin from "../models/Admin.js";
 import { env } from "../config/env.js";
+import { notifyVendorLogin } from "../services/adminNotificationService.js";
+import { ensureVendorSubscription } from "../services/billingService.js";
 
 const buildToken = (adminId) =>
   jwt.sign({ id: adminId }, env.jwtSecret, { expiresIn: env.jwtExpiresIn });
@@ -14,6 +17,114 @@ const setAuthCookie = (res, token) => {
   });
 };
 
+const normalizeEmail = (email = "") => String(email).trim().toLowerCase();
+
+const buildApiUrl = (baseUrl = "", path = "") => {
+  const base = String(baseUrl || "").trim().replace(/\/+$/, "");
+  const suffix = String(path || "").trim().replace(/^\/+/, "");
+  return base && suffix ? `${base}/${suffix}` : "";
+};
+
+const isVendorRole = (role = "") => String(role).trim().toLowerCase() === "vendor";
+
+const randomLocalPassword = () => crypto.randomBytes(24).toString("base64url");
+
+const getSellersLoginMessage = (data, fallback) =>
+  data?.message || data?.error || fallback;
+
+const loginWithSellersLoginVendor = async ({ email, password }) => {
+  const url = buildApiUrl(env.sellersloginApiUrl, "auth/login");
+
+  if (!url) {
+    const error = new Error("SellersLogin authentication is not configured");
+    error.status = 503;
+    throw error;
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ email, password }),
+  });
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok || !data?.success) {
+    const error = new Error(
+      getSellersLoginMessage(data, "Unable to verify SellersLogin credentials"),
+    );
+    error.status = response.status;
+    throw error;
+  }
+
+  const upstreamUser = data.data || {};
+
+  if (!isVendorRole(upstreamUser.role)) {
+    const error = new Error("Only vendor accounts can access Email Marketing");
+    error.status = 403;
+    throw error;
+  }
+
+  return upstreamUser;
+};
+
+const upsertSellersLoginVendor = async (upstreamUser) => {
+  const email = normalizeEmail(upstreamUser.email);
+  const sellersloginVendorId = String(
+    upstreamUser.vendor_id || upstreamUser.id || "",
+  ).trim();
+  const name = String(
+    upstreamUser.vendor_name || upstreamUser.name || email.split("@")[0] || "Vendor",
+  ).trim();
+  const businessName = String(upstreamUser.vendor_name || upstreamUser.business_name || "").trim();
+
+  if (!email || !sellersloginVendorId) {
+    const error = new Error("SellersLogin vendor profile is incomplete");
+    error.status = 400;
+    throw error;
+  }
+
+  const existingUser = await Admin.findOne({
+    $or: [{ email }, { sellersloginVendorId }],
+  }).select("+password");
+
+  const payload = {
+    name,
+    email,
+    phone: String(upstreamUser.phone || "").trim(),
+    businessName,
+    sellersloginVendorId,
+    sellersloginAccountType: String(upstreamUser.account_type || "").trim(),
+    sellersloginActorId: String(upstreamUser.actor_id || "").trim(),
+    sellersloginPageAccess: Array.isArray(upstreamUser.page_access)
+      ? upstreamUser.page_access.map(String)
+      : [],
+    sellersloginWebsiteAccess: Array.isArray(upstreamUser.website_access)
+      ? upstreamUser.website_access.map(String)
+      : [],
+    role: "vendor",
+    accountStatus: "active",
+  };
+
+  if (existingUser) {
+    Object.assign(existingUser, payload);
+
+    if (!existingUser.password) {
+      existingUser.password = randomLocalPassword();
+    }
+
+    await existingUser.save();
+    return existingUser;
+  }
+
+  return Admin.create({
+    ...payload,
+    password: randomLocalPassword(),
+  });
+};
+
 const loginAdmin = async (req, res) => {
   const { email, password } = req.body;
 
@@ -21,44 +132,75 @@ const loginAdmin = async (req, res) => {
     return res.status(400).json({ message: "Email and password are required" });
   }
 
-  const admin = await Admin.findOne({ email: email.toLowerCase() }).select(
+  const normalizedEmail = normalizeEmail(email);
+  const admin = await Admin.findOne({ email: normalizedEmail }).select(
     "+password",
   );
 
-  if (!admin) {
-    return res.status(401).json({ message: "Invalid credentials" });
+  if (admin?.password) {
+    const isValidPassword = await admin.comparePassword(password);
+
+    if (isValidPassword) {
+      if (admin.accountStatus === "inactive") {
+        return res.status(403).json({ message: "Your account has been deactivated" });
+      }
+
+      await Admin.updateOne(
+        { _id: admin._id },
+        {
+          $set: {
+            lastLoginAt: new Date(),
+          },
+        },
+      );
+
+      const token = buildToken(admin.id);
+      setAuthCookie(res, token);
+
+      const safeUser = admin.toSafeObject();
+
+      await notifyVendorLogin(admin);
+
+      return res.json({
+        message: "Login successful",
+        token,
+        admin: safeUser,
+        user: safeUser,
+      });
+    }
   }
 
-  if (admin.accountStatus === "inactive") {
-    return res.status(403).json({ message: "Your account has been deactivated" });
-  }
+  let vendorUser;
 
-  if (!admin.password) {
-    return res.status(401).json({ message: "Invalid credentials" });
-  }
-
-  const isValidPassword = await admin.comparePassword(password);
-
-  if (!isValidPassword) {
-    return res.status(401).json({ message: "Invalid credentials" });
+  try {
+    const upstreamUser = await loginWithSellersLoginVendor({
+      email: normalizedEmail,
+      password,
+    });
+    vendorUser = await upsertSellersLoginVendor(upstreamUser);
+  } catch (error) {
+    return res.status(error.status || 401).json({
+      message: error.status ? error.message : "Invalid credentials",
+    });
   }
 
   await Admin.updateOne(
-    { _id: admin._id },
-    {
-      $set: {
-        lastLoginAt: new Date(),
-      },
-    },
+    { _id: vendorUser._id },
+    { $set: { lastLoginAt: new Date() } },
   );
+  await ensureVendorSubscription(vendorUser.sellersloginVendorId || vendorUser.id);
 
-  const token = buildToken(admin.id);
+  const token = buildToken(vendorUser.id);
   setAuthCookie(res, token);
+  const safeUser = vendorUser.toSafeObject();
+
+  await notifyVendorLogin(vendorUser);
 
   return res.json({
-    message: "Login successful",
+    message: "Vendor login successful",
     token,
-    admin: admin.toSafeObject(),
+    admin: safeUser,
+    user: safeUser,
   });
 };
 
@@ -73,7 +215,8 @@ const logoutAdmin = async (_req, res) => {
 };
 
 const getCurrentAdmin = async (req, res) => {
-  return res.json({ admin: req.admin.toSafeObject() });
+  const safeUser = req.admin.toSafeObject();
+  return res.json({ admin: safeUser, user: safeUser });
 };
 
 export { loginAdmin, logoutAdmin, getCurrentAdmin };

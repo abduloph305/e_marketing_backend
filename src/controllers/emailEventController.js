@@ -22,6 +22,7 @@ const recordTrackedEvent = async (recipientId, eventType, extra = {}) => {
   const event = await storeEmailEvent({
     campaignId: recipient.campaignId,
     subscriberId: recipient.subscriberId,
+    vendorId: recipient.vendorId || "",
     recipientEmail: recipient.email,
     messageId: recipient.messageId || `recipient-${recipient._id}`,
     eventType,
@@ -174,7 +175,8 @@ const getWebhookEventDebug = async (_req, res) => {
 
   const normalizedEvents = await Promise.all(
     events.map(async (event) => {
-      const subscriber = await Subscriber.findOne({ email: event.recipientEmail })
+      const vendorMatch = event.vendorId ? { vendorId: event.vendorId } : {};
+      const subscriber = await Subscriber.findOne({ ...vendorMatch, email: event.recipientEmail })
         .select("status blockedReason blockedAt")
         .lean();
 

@@ -10,6 +10,12 @@ export const automationExecutionStatuses = [
 
 const automationExecutionSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     workflowId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "AutomationWorkflow",

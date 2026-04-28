@@ -2,11 +2,16 @@ import mongoose from "mongoose";
 
 const emailTemplateSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     name: {
       type: String,
       required: true,
       trim: true,
-      unique: true,
     },
     subject: {
       type: String,
@@ -31,6 +36,8 @@ const emailTemplateSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+emailTemplateSchema.index({ vendorId: 1, name: 1 }, { unique: true });
 
 const EmailTemplate =
   mongoose.models.EmailTemplate ||

@@ -1,5 +1,6 @@
 const adminRoles = [
   "super_admin",
+  "vendor",
   "marketing_manager",
   "content_editor",
   "analyst",
@@ -19,6 +20,16 @@ const rolePermissions = {
     "export_reports",
     "manage_team_access",
     "manage_settings",
+  ],
+  vendor: [
+    "view_dashboard",
+    "manage_campaigns",
+    "edit_content",
+    "manage_audience",
+    "manage_automations",
+    "view_analytics",
+    "view_reports",
+    "export_reports",
   ],
   marketing_manager: [
     "view_dashboard",

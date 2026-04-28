@@ -12,6 +12,7 @@ import { sendCampaign as sendCampaignThroughSes } from "./sesService.js";
 import { storeEmailEvent } from "./emailEventService.js";
 import { buildSegmentQuery, normalizeSegmentDefinition } from "../utils/segmentEngine.js";
 import { isSubscriberEligibleForEmail } from "../utils/emailEligibility.js";
+import { assertEmailQuota, recordEmailUsage } from "./billingService.js";
 
 const campaignPopulate = [
   { path: "templateId" },
@@ -38,7 +39,8 @@ const claimDueCampaign = async (campaignId) => {
 };
 
 const buildCampaignRecipients = async (campaign) => {
-  let match = { status: "subscribed" };
+  const vendorMatch = campaign.vendorId ? { vendorId: campaign.vendorId } : {};
+  let match = { ...vendorMatch, status: "subscribed" };
 
   const definition = normalizeSegmentDefinition(
     campaign.segmentId?.definition || { rules: campaign.segmentId?.rules || [] },
@@ -46,11 +48,11 @@ const buildCampaignRecipients = async (campaign) => {
 
   if (definition.filters.length) {
     match = {
-      $and: [{ status: "subscribed" }, buildSegmentQuery(definition)],
+      $and: [{ ...vendorMatch, status: "subscribed" }, buildSegmentQuery(definition)],
     };
   }
 
-  const suppressedEmails = await SuppressionEntry.find().select("email -_id").lean();
+  const suppressedEmails = await SuppressionEntry.find(vendorMatch).select("email -_id").lean();
   const suppressedSet = new Set(
     suppressedEmails.map((item) => String(item.email || "").toLowerCase()),
   );
@@ -85,14 +87,17 @@ const buildTrackingUrls = (recipientId) => {
   };
 };
 
-const dispatchCampaign = async (campaignId, { mode = "manual" } = {}) => {
-  const campaign = await EmailCampaign.findById(campaignId).populate(campaignPopulate);
+const dispatchCampaign = async (campaignId, { mode = "manual", scopeMatch = {} } = {}) => {
+  const campaign = await EmailCampaign.findOne({ _id: campaignId, ...scopeMatch }).populate(campaignPopulate);
 
   if (!campaign || !campaign.templateId) {
     throw new Error("Campaign or template not found");
   }
 
   const recipients = await buildCampaignRecipients(campaign);
+  if (campaign.vendorId) {
+    await assertEmailQuota(campaign.vendorId, recipients.length);
+  }
 
   await EmailCampaign.findByIdAndUpdate(campaign._id, {
     status: "sending",
@@ -113,9 +118,12 @@ const dispatchCampaign = async (campaignId, { mode = "manual" } = {}) => {
     },
   });
 
-  await CampaignRecipient.deleteMany({ campaignId: campaign._id });
+  const vendorMatch = campaign.vendorId ? { vendorId: campaign.vendorId } : {};
+
+  await CampaignRecipient.deleteMany({ campaignId: campaign._id, ...vendorMatch });
   const recipientRecords = await CampaignRecipient.insertMany(
     recipients.map((subscriber) => ({
+      vendorId: campaign.vendorId || "",
       campaignId: campaign._id,
       subscriberId: subscriber._id,
       email: subscriber.email,
@@ -143,7 +151,7 @@ const dispatchCampaign = async (campaignId, { mode = "manual" } = {}) => {
     });
 
     await CampaignRecipient.findOneAndUpdate(
-      { campaignId: campaign._id, email: subscriber.email },
+      { campaignId: campaign._id, email: subscriber.email, ...vendorMatch },
       {
         messageId,
         status: "sent",
@@ -154,6 +162,7 @@ const dispatchCampaign = async (campaignId, { mode = "manual" } = {}) => {
     await storeEmailEvent({
       campaignId: campaign._id,
       subscriberId: subscriber._id,
+      vendorId: campaign.vendorId || "",
       recipientEmail: subscriber.email,
       messageId,
       eventType: "send",
@@ -174,6 +183,13 @@ const dispatchCampaign = async (campaignId, { mode = "manual" } = {}) => {
     .populate({ path: "segmentId", select: "name" });
 
   await updateCampaignCounters(campaign._id);
+  await recordEmailUsage({
+    vendorId: campaign.vendorId || "",
+    count: recipients.length,
+    sourceId: campaign._id,
+    sourceType: "campaign",
+    metadata: { mode },
+  });
   await logCampaignActivity(campaign._id, "send_completed", "Campaign send completed", {
     sentCount: recipients.length,
     mode,

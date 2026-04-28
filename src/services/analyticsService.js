@@ -125,8 +125,9 @@ const summarizeEmailEvents = async (match = {}) => {
   };
 };
 
-const getConversionSummary = async (window = {}) => {
+const getConversionSummary = async (window = {}, scopeMatch = {}) => {
   const convertedMatch = {
+    ...scopeMatch,
     convertedAt: { $ne: null },
     ...buildWindowMatch(window, "convertedAt"),
   };
@@ -146,6 +147,7 @@ const getConversionSummary = async (window = {}) => {
     IntegrationEvent.aggregate([
       {
         $match: {
+          ...scopeMatch,
           ...buildWindowMatch(window, "createdAt"),
           eventType: { $in: ["order.completed", "payment.success"] },
         },
@@ -168,7 +170,7 @@ const getConversionSummary = async (window = {}) => {
       },
     ]),
     EmailCampaign.aggregate([
-      { $match: buildWindowMatch(window, "sentAt") },
+      { $match: { ...scopeMatch, ...buildWindowMatch(window, "sentAt") } },
       {
         $group: {
           _id: null,
@@ -203,23 +205,26 @@ const getConversionSummary = async (window = {}) => {
   };
 };
 
-const getListGrowthSummary = async (window = {}) => {
+const getListGrowthSummary = async (window = {}, scopeMatch = {}) => {
   const [newSubscribers, unsubscribes, priorAudience, currentAudience] = await Promise.all([
-    Subscriber.countDocuments(buildWindowMatch(window, "createdAt")),
+    Subscriber.countDocuments({ ...scopeMatch, ...buildWindowMatch(window, "createdAt") }),
     EmailEvent.countDocuments({
+      ...scopeMatch,
       ...buildWindowMatch(window, "timestamp"),
       eventType: "unsubscribe",
     }),
     window.startDate
       ? Subscriber.countDocuments({
+          ...scopeMatch,
           createdAt: { $lt: window.startDate },
         })
       : Promise.resolve(0),
     window.endDate
       ? Subscriber.countDocuments({
+          ...scopeMatch,
           createdAt: { $lte: window.endDate },
         })
-      : Subscriber.countDocuments({}),
+      : Subscriber.countDocuments(scopeMatch),
   ]);
 
   const netGrowth = newSubscribers - unsubscribes;
@@ -235,10 +240,11 @@ const getListGrowthSummary = async (window = {}) => {
   };
 };
 
-const getDeviceBreakdown = async (window = {}) => {
+const getDeviceBreakdown = async (window = {}, scopeMatch = {}) => {
   const rows = await EmailEvent.aggregate([
     {
       $match: {
+        ...scopeMatch,
         ...buildWindowMatch(window, "timestamp"),
         eventType: { $in: ["open", "click"] },
       },
@@ -269,8 +275,8 @@ const getDeviceBreakdown = async (window = {}) => {
 
 const normalizeLocation = (value = "") => String(value || "").trim() || "Unknown";
 
-const getLocationBreakdown = async (window = {}) => {
-  const subscriberMatch = buildWindowMatch(window, "createdAt");
+const getLocationBreakdown = async (window = {}, scopeMatch = {}) => {
+  const subscriberMatch = { ...scopeMatch, ...buildWindowMatch(window, "createdAt") };
   const [countryRows, stateRows, cityRows, eventCountryRows] = await Promise.all([
     Subscriber.aggregate([
       { $match: subscriberMatch },
@@ -308,6 +314,7 @@ const getLocationBreakdown = async (window = {}) => {
     EmailEvent.aggregate([
       {
         $match: {
+          ...scopeMatch,
           ...buildWindowMatch(window, "timestamp"),
           eventType: { $in: ["open", "click"] },
         },
@@ -346,10 +353,11 @@ const getLocationBreakdown = async (window = {}) => {
   };
 };
 
-const getTimeBasedAnalytics = async (window = {}) => {
+const getTimeBasedAnalytics = async (window = {}, scopeMatch = {}) => {
   const rows = await EmailEvent.aggregate([
     {
       $match: {
+        ...scopeMatch,
         ...buildWindowMatch(window, "timestamp"),
         eventType: { $in: ["open", "click"] },
       },
@@ -441,7 +449,7 @@ const getTimeBasedAnalytics = async (window = {}) => {
   };
 };
 
-const getAnalyticsSnapshot = async (query = {}) => {
+const getAnalyticsSnapshot = async (query = {}, scopeMatch = {}) => {
   const window = {
     startDate: query.startDate ? new Date(query.startDate) : null,
     endDate: query.endDate ? new Date(query.endDate) : null,
@@ -456,12 +464,12 @@ const getAnalyticsSnapshot = async (query = {}) => {
   }
 
   const [summary, conversion, listGrowth, deviceBreakdown, locationBreakdown, timeBasedAnalytics] = await Promise.all([
-    summarizeEmailEvents(buildWindowMatch(window, "timestamp")),
-    getConversionSummary(window),
-    getListGrowthSummary(window),
-    getDeviceBreakdown(window),
-    getLocationBreakdown(window),
-    getTimeBasedAnalytics(window),
+    summarizeEmailEvents({ ...scopeMatch, ...buildWindowMatch(window, "timestamp") }),
+    getConversionSummary(window, scopeMatch),
+    getListGrowthSummary(window, scopeMatch),
+    getDeviceBreakdown(window, scopeMatch),
+    getLocationBreakdown(window, scopeMatch),
+    getTimeBasedAnalytics(window, scopeMatch),
   ]);
 
   return {

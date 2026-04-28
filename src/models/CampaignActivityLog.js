@@ -2,6 +2,12 @@ import mongoose from "mongoose";
 
 const campaignActivityLogSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     campaignId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "EmailCampaign",

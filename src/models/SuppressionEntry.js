@@ -12,10 +12,15 @@ export const suppressionStatuses = ["active", "released"];
 
 const suppressionEntrySchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     email: {
       type: String,
       required: true,
-      unique: true,
       trim: true,
       lowercase: true,
     },
@@ -51,6 +56,8 @@ const suppressionEntrySchema = new mongoose.Schema(
 );
 
 suppressionEntrySchema.index({ email: 1, status: 1 });
+suppressionEntrySchema.index({ vendorId: 1, email: 1 }, { unique: true });
+suppressionEntrySchema.index({ vendorId: 1, reason: 1, status: 1 });
 suppressionEntrySchema.index({ reason: 1, status: 1 });
 
 const SuppressionEntry =

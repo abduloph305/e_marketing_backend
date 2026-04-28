@@ -12,6 +12,12 @@ export const automationStepTypes = [
 
 const automationStepSchema = new mongoose.Schema(
   {
+    vendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
     workflowId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "AutomationWorkflow",
@@ -49,6 +55,7 @@ const automationStepSchema = new mongoose.Schema(
 );
 
 automationStepSchema.index({ workflowId: 1, order: 1 }, { unique: true });
+automationStepSchema.index({ vendorId: 1, workflowId: 1 });
 
 const AutomationStep =
   mongoose.models.AutomationStep ||

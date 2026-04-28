@@ -21,7 +21,10 @@ import {
   registerEcommerceAutomationHooks,
   replaceWorkflowSteps,
 } from "../services/automationService.js";
+import { notifyVendorActivity } from "../services/adminNotificationService.js";
+import { assertFeatureLimit } from "../services/billingService.js";
 import { buildAutomationEmailPayload, sendAutomationEmail } from "../services/sesService.js";
+import { buildVendorMatch, getRequestVendorId, withVendorScope, withVendorWrite } from "../utils/vendorScope.js";
 
 const escapeHtml = (value = "") =>
   String(value)
@@ -71,10 +74,11 @@ const validateWorkflowPayload = (payload) => {
   return "";
 };
 
-const getAutomationMeta = async (_req, res) => {
+const getAutomationMeta = async (req, res) => {
+  const vendorMatch = buildVendorMatch(req);
   const [templates, segments] = await Promise.all([
-    EmailTemplate.find().select("name subject").sort({ updatedAt: -1 }),
-    Segment.find().select("name").sort({ updatedAt: -1 }),
+    EmailTemplate.find(vendorMatch).select("name subject").sort({ updatedAt: -1 }),
+    Segment.find(vendorMatch).select("name").sort({ updatedAt: -1 }),
   ]);
 
   return res.json({
@@ -91,7 +95,7 @@ const getAutomationMeta = async (_req, res) => {
 const listWorkflows = async (req, res) => {
   const page = Math.max(Number(req.query.page) || 1, 1);
   const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
-  const match = buildWorkflowMatch(req.query);
+  const match = withVendorScope(req, buildWorkflowMatch(req.query));
 
   const [workflows, total] = await Promise.all([
     AutomationWorkflow.find(match)
@@ -116,7 +120,7 @@ const listWorkflows = async (req, res) => {
 };
 
 const getWorkflowById = async (req, res) => {
-  const payload = await buildWorkflowDetailPayload(req.params.id);
+  const payload = await buildWorkflowDetailPayload(req.params.id, buildVendorMatch(req));
 
   if (!payload) {
     return res.status(404).json({ message: "Workflow not found" });
@@ -132,14 +136,23 @@ const createWorkflow = async (req, res) => {
   }
 
   try {
-    const workflow = await AutomationWorkflow.create(normalizeWorkflowPayload(req.body));
+    await assertFeatureLimit(getRequestVendorId(req), "automations");
+    const workflow = await AutomationWorkflow.create(withVendorWrite(req, normalizeWorkflowPayload(req.body)));
     await replaceWorkflowSteps(workflow._id, req.body.steps || []);
     await logAutomationEvent(workflow._id, "workflow.created", "Workflow created", {
       trigger: workflow.trigger,
       stepCount: (req.body.steps || []).length,
     });
+    await notifyVendorActivity({
+      actor: req.admin,
+      entityType: "automation",
+      entityId: workflow._id,
+      action: "created",
+      title: "Automation created",
+      itemName: workflow.name,
+    });
 
-    const payload = await buildWorkflowDetailPayload(workflow._id);
+    const payload = await buildWorkflowDetailPayload(workflow._id, buildVendorMatch(req));
     return res.status(201).json(payload);
   } catch (_error) {
     return res.status(400).json({ message: "Unable to create workflow" });
@@ -153,8 +166,9 @@ const updateWorkflow = async (req, res) => {
   }
 
   try {
-    const workflow = await AutomationWorkflow.findByIdAndUpdate(
-      req.params.id,
+    const vendorMatch = buildVendorMatch(req);
+    const workflow = await AutomationWorkflow.findOneAndUpdate(
+      { _id: req.params.id, ...vendorMatch },
       normalizeWorkflowPayload(req.body),
       { returnDocument: "after", runValidators: true }
     );
@@ -168,8 +182,16 @@ const updateWorkflow = async (req, res) => {
       trigger: workflow.trigger,
       stepCount: (req.body.steps || []).length,
     });
+    await notifyVendorActivity({
+      actor: req.admin,
+      entityType: "automation",
+      entityId: workflow._id,
+      action: "updated",
+      title: "Automation updated",
+      itemName: workflow.name,
+    });
 
-    const payload = await buildWorkflowDetailPayload(workflow._id);
+    const payload = await buildWorkflowDetailPayload(workflow._id, vendorMatch);
     return res.json(payload);
   } catch (_error) {
     return res.status(400).json({ message: "Unable to update workflow" });
@@ -177,8 +199,9 @@ const updateWorkflow = async (req, res) => {
 };
 
 const activateWorkflow = async (req, res) => {
-  const workflow = await AutomationWorkflow.findByIdAndUpdate(
-    req.params.id,
+  const vendorMatch = buildVendorMatch(req);
+  const workflow = await AutomationWorkflow.findOneAndUpdate(
+    { _id: req.params.id, ...vendorMatch },
     {
       status: "active",
       isActive: true,
@@ -192,13 +215,22 @@ const activateWorkflow = async (req, res) => {
   }
 
   await logAutomationEvent(workflow._id, "workflow.activated", "Workflow activated");
-  const payload = await buildWorkflowDetailPayload(workflow._id);
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "automation",
+    entityId: workflow._id,
+    action: "activated",
+    title: "Automation activated",
+    itemName: workflow.name,
+  });
+  const payload = await buildWorkflowDetailPayload(workflow._id, vendorMatch);
   return res.json(payload);
 };
 
 const deactivateWorkflow = async (req, res) => {
-  const workflow = await AutomationWorkflow.findByIdAndUpdate(
-    req.params.id,
+  const vendorMatch = buildVendorMatch(req);
+  const workflow = await AutomationWorkflow.findOneAndUpdate(
+    { _id: req.params.id, ...vendorMatch },
     {
       status: "inactive",
       isActive: false,
@@ -211,7 +243,15 @@ const deactivateWorkflow = async (req, res) => {
   }
 
   await logAutomationEvent(workflow._id, "workflow.deactivated", "Workflow deactivated");
-  const payload = await buildWorkflowDetailPayload(workflow._id);
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "automation",
+    entityId: workflow._id,
+    action: "deactivated",
+    title: "Automation deactivated",
+    itemName: workflow.name,
+  });
+  const payload = await buildWorkflowDetailPayload(workflow._id, vendorMatch);
   return res.json(payload);
 };
 
@@ -220,12 +260,12 @@ const getWorkflowExecutions = async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
 
   const [executions, total] = await Promise.all([
-    AutomationExecution.find({ workflowId: req.params.id })
+    AutomationExecution.find({ workflowId: req.params.id, ...buildVendorMatch(req) })
       .populate({ path: "subscriberId", select: "firstName lastName email" })
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit),
-    AutomationExecution.countDocuments({ workflowId: req.params.id }),
+    AutomationExecution.countDocuments({ workflowId: req.params.id, ...buildVendorMatch(req) }),
   ]);
 
   return res.json({
@@ -251,7 +291,7 @@ const previewWorkflowEmail = async (req, res) => {
   let workflow = workflowPayload;
 
   if (workflowId) {
-    const loadedWorkflow = await buildWorkflowDetailPayload(workflowId);
+    const loadedWorkflow = await buildWorkflowDetailPayload(workflowId, buildVendorMatch(req));
 
     if (!loadedWorkflow) {
       return res.status(404).json({ message: "Workflow not found" });
@@ -269,7 +309,9 @@ const previewWorkflowEmail = async (req, res) => {
   const steps = Array.isArray(workflow.steps) ? workflow.steps : [];
   const emailStep = steps.find((step) => step.type === "send_email") || null;
   const templateId = emailStep?.config?.templateId || "";
-  const template = templateId ? await EmailTemplate.findById(templateId).lean() : null;
+    const template = templateId
+      ? await EmailTemplate.findOne({ _id: templateId, ...buildVendorMatch(req) }).lean()
+      : null;
   const hasRenderableTemplate = Boolean(template?.htmlContent);
 
   try {
@@ -347,7 +389,7 @@ const createSampleExecution = async (req, res) => {
   let workflow = workflowPayload;
 
   if (!workflow && workflowId) {
-    const loadedWorkflow = await buildWorkflowDetailPayload(workflowId);
+    const loadedWorkflow = await buildWorkflowDetailPayload(workflowId, buildVendorMatch(req));
 
     if (!loadedWorkflow) {
       return res.status(404).json({ message: "Workflow not found" });
@@ -369,7 +411,7 @@ const createSampleExecution = async (req, res) => {
     const steps = Array.isArray(workflow.steps) && workflow.steps.length
       ? workflow.steps
       : workflowId && isValidObjectId(workflowId)
-        ? await AutomationStep.find({ workflowId }).sort({ order: 1 }).lean()
+        ? await AutomationStep.find({ workflowId, ...buildVendorMatch(req) }).sort({ order: 1 }).lean()
         : [];
     const emailStep = steps.find((step) => step.type === "send_email") || null;
 
@@ -377,7 +419,10 @@ const createSampleExecution = async (req, res) => {
       return res.status(400).json({ message: "Send email step requires a template" });
     }
 
-    const template = await EmailTemplate.findById(emailStep.config.templateId).lean();
+    const template = await EmailTemplate.findOne({
+      _id: emailStep.config.templateId,
+      ...buildVendorMatch(req),
+    }).lean();
 
     if (!template) {
       return res.status(404).json({ message: "Selected email template not found" });
@@ -431,17 +476,27 @@ const triggerWorkflows = async (req, res) => {
 };
 
 const deleteWorkflow = async (req, res) => {
-  const workflow = await AutomationWorkflow.findByIdAndDelete(req.params.id);
+  const vendorMatch = buildVendorMatch(req);
+  const workflow = await AutomationWorkflow.findOneAndDelete({ _id: req.params.id, ...vendorMatch });
 
   if (!workflow) {
     return res.status(404).json({ message: "Workflow not found" });
   }
 
   await Promise.all([
-    AutomationStep.deleteMany({ workflowId: req.params.id }),
-    AutomationExecution.deleteMany({ workflowId: req.params.id }),
-    AutomationLog.deleteMany({ workflowId: req.params.id }),
+    AutomationStep.deleteMany({ workflowId: req.params.id, ...vendorMatch }),
+    AutomationExecution.deleteMany({ workflowId: req.params.id, ...vendorMatch }),
+    AutomationLog.deleteMany({ workflowId: req.params.id, ...vendorMatch }),
   ]);
+
+  await notifyVendorActivity({
+    actor: req.admin,
+    entityType: "automation",
+    entityId: workflow._id,
+    action: "deleted",
+    title: "Automation deleted",
+    itemName: workflow.name,
+  });
 
   return res.json({ message: "Workflow deleted" });
 };

@@ -16,6 +16,40 @@ const adminSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
+    phone: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    businessName: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    sellersloginVendorId: {
+      type: String,
+      trim: true,
+      default: "",
+      index: true,
+    },
+    sellersloginAccountType: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    sellersloginActorId: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    sellersloginPageAccess: {
+      type: [String],
+      default: [],
+    },
+    sellersloginWebsiteAccess: {
+      type: [String],
+      default: [],
+    },
     password: {
       type: String,
       required: true,
@@ -25,7 +59,7 @@ const adminSchema = new mongoose.Schema(
     role: {
       type: String,
       enum: adminRoles,
-      default: "super_admin",
+      default: "vendor",
     },
     permissions: {
       type: [String],
@@ -50,21 +84,16 @@ const adminSchema = new mongoose.Schema(
   }
 );
 
-adminSchema.pre("save", async function hashPassword(next) {
-  try {
-    if (!this.isModified("password")) {
-      return next();
-    }
-
-    if (String(this.password || "").startsWith("$2")) {
-      return next();
-    }
-
-    this.password = await bcrypt.hash(this.password, 10);
-    return next();
-  } catch (error) {
-    return next(error);
+adminSchema.pre("save", async function hashPassword() {
+  if (!this.isModified("password")) {
+    return;
   }
+
+  if (String(this.password || "").startsWith("$2")) {
+    return;
+  }
+
+  this.password = await bcrypt.hash(this.password, 10);
 });
 
 adminSchema.methods.comparePassword = function comparePassword(candidatePassword) {
@@ -80,6 +109,13 @@ adminSchema.methods.toSafeObject = function toSafeObject() {
     id: this._id,
     name: this.name,
     email: this.email,
+    phone: this.phone || "",
+    businessName: this.businessName || "",
+    sellersloginVendorId: this.sellersloginVendorId || "",
+    sellersloginAccountType: this.sellersloginAccountType || "",
+    sellersloginActorId: this.sellersloginActorId || "",
+    sellersloginPageAccess: this.sellersloginPageAccess || [],
+    sellersloginWebsiteAccess: this.sellersloginWebsiteAccess || [],
     role,
     permissions,
     accountStatus: this.accountStatus || "active",
