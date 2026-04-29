@@ -5,6 +5,11 @@ import {
   normalizeSegmentDefinition,
   summarizeFilter,
 } from "../utils/segmentEngine.js";
+import {
+  buildWebsiteScopeMatch,
+  combineAudienceMatches,
+  normalizeWebsiteScope,
+} from "../utils/audienceWebsiteScope.js";
 import { notifyVendorActivity } from "../services/adminNotificationService.js";
 import { assertFeatureLimit } from "../services/billingService.js";
 import { buildVendorMatch, getRequestVendorId, withVendorWrite } from "../utils/vendorScope.js";
@@ -113,22 +118,24 @@ const quickSegments = [
 
 const serializeSegment = (segment, previewCount = 0) => {
   const definition = normalizeSegmentDefinition(segment.definition || { rules: segment.rules || [] });
+  const websiteScope = normalizeWebsiteScope(segment.websiteScope || {});
 
   return {
     ...segment,
     definition,
     rules: definition.filters,
+    websiteScope,
     previewCount,
     filterSummary: definition.filters.map((filter) => summarizeFilter(filter)),
   };
 };
 
-const getPreviewData = async (definition = {}, scopeMatch = {}) => {
+const getPreviewData = async (definition = {}, scopeMatch = {}, websiteScope = {}) => {
   if (!normalizeSegmentDefinition(definition).filters.length) {
     return [];
   }
 
-  const match = { ...buildSegmentQuery(definition), ...scopeMatch };
+  const match = combineAudienceMatches(scopeMatch, buildWebsiteScopeMatch(websiteScope), buildSegmentQuery(definition));
   return Subscriber.find(match)
     .sort({ engagementScore: -1, updatedAt: -1 })
     .limit(5)
@@ -138,12 +145,12 @@ const getPreviewData = async (definition = {}, scopeMatch = {}) => {
     .lean();
 };
 
-const getPreviewCount = async (definition = {}, scopeMatch = {}) => {
+const getPreviewCount = async (definition = {}, scopeMatch = {}, websiteScope = {}) => {
   if (!normalizeSegmentDefinition(definition).filters.length) {
     return 0;
   }
 
-  const match = { ...buildSegmentQuery(definition), ...scopeMatch };
+  const match = combineAudienceMatches(scopeMatch, buildWebsiteScopeMatch(websiteScope), buildSegmentQuery(definition));
   return Subscriber.countDocuments(match);
 };
 
@@ -168,7 +175,7 @@ const listSegments = async (req, res) => {
   const items = await Promise.all(
     segments.map(async (segment) => {
       const definition = normalizeSegmentDefinition(segment.definition || { rules: segment.rules || [] });
-      const previewCount = await getPreviewCount(definition, vendorMatch);
+      const previewCount = await getPreviewCount(definition, vendorMatch, segment.websiteScope);
       return serializeSegment({ ...segment, definition }, previewCount);
     }),
   );
@@ -187,7 +194,10 @@ const getSegmentById = async (req, res) => {
   const definition = normalizeSegmentDefinition(segment.definition || { rules: segment.rules || [] });
 
   return res.json({
-    ...serializeSegment({ ...segment, definition }, await getPreviewCount(definition, vendorMatch)),
+    ...serializeSegment(
+      { ...segment, definition },
+      await getPreviewCount(definition, vendorMatch, segment.websiteScope),
+    ),
   });
 };
 
@@ -212,11 +222,13 @@ const createSegment = async (req, res) => {
 
     await assertFeatureLimit(getRequestVendorId(req), "segments");
     const vendorMatch = buildVendorMatch(req);
+    const websiteScope = normalizeWebsiteScope(req.body.websiteScope || {});
     const segment = await Segment.create(withVendorWrite(req, {
       name,
       description: req.body.description?.trim() || "",
       definition,
       rules: definition.filters,
+      websiteScope,
     }));
     await notifyVendorActivity({
       actor: req.admin,
@@ -230,7 +242,7 @@ const createSegment = async (req, res) => {
     return res.status(201).json(
       serializeSegment(
         segment.toObject(),
-        await getPreviewCount(definition, vendorMatch),
+        await getPreviewCount(definition, vendorMatch, websiteScope),
       ),
     );
   } catch (error) {
@@ -262,6 +274,7 @@ const updateSegment = async (req, res) => {
     }
 
     const vendorMatch = buildVendorMatch(req);
+    const websiteScope = normalizeWebsiteScope(req.body.websiteScope || {});
     const segment = await Segment.findOneAndUpdate(
       { _id: req.params.id, ...vendorMatch },
       {
@@ -269,6 +282,7 @@ const updateSegment = async (req, res) => {
         description: req.body.description?.trim() || "",
         definition,
         rules: definition.filters,
+        websiteScope,
       },
       {
         returnDocument: "after",
@@ -290,7 +304,7 @@ const updateSegment = async (req, res) => {
     });
 
     return res.json(
-      serializeSegment(segment, await getPreviewCount(definition, vendorMatch)),
+      serializeSegment(segment, await getPreviewCount(definition, vendorMatch, websiteScope)),
     );
   } catch (error) {
     if (error.code === 11000) {
@@ -330,9 +344,10 @@ const previewSegment = async (req, res) => {
     );
 
     const vendorMatch = buildVendorMatch(req);
+    const websiteScope = normalizeWebsiteScope(req.body.websiteScope || {});
     const [previewCount, sampleSubscribers] = await Promise.all([
-      getPreviewCount(definition, vendorMatch),
-      getPreviewData(definition, vendorMatch),
+      getPreviewCount(definition, vendorMatch, websiteScope),
+      getPreviewData(definition, vendorMatch, websiteScope),
     ]);
 
     return res.json({ previewCount, sampleSubscribers });

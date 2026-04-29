@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --watch index.js",
     "start": "node index.js",
-    "seed:admin": "node src/scripts/seedAdmin.js"
+    "seed:admin": "node src/scripts/seedAdmin.js",
+    "fix:subscriber-indexes": "node src/scripts/fixSubscriberIndexes.js"
   },
   "keywords": [
     "express",

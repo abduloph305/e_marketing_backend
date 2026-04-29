@@ -316,10 +316,14 @@ const buildRawMimeEmail = async ({
     `--${multipartBoundary}`,
     `Content-Type: ${attachment.contentType}; name="${attachment.filename}"`,
     "Content-Transfer-Encoding: base64",
-    `Content-Disposition: inline; filename="${attachment.filename}"`,
-    `Content-ID: <${attachment.cid}>`,
+    `Content-Disposition: ${attachment.disposition || "inline"}; filename="${attachment.filename}"`,
+    ...(attachment.cid ? [`Content-ID: <${attachment.cid}>`] : []),
     "",
-    wrapBinaryBase64(Buffer.from(attachment.base64, "base64")),
+    wrapBinaryBase64(
+      attachment.base64
+        ? Buffer.from(attachment.base64, "base64")
+        : Buffer.from(attachment.content || "")
+    ),
     "",
   ].join("\r\n"));
 
@@ -589,9 +593,45 @@ const sendTransactionalEmail = async ({
   fromEmail = env.automationFromEmail || env.adminEmail,
   replyTo = env.adminEmail || "",
   tags = [],
+  attachments = [],
 }) => {
   if (!fromEmail) {
     throw new Error("Transactional sender email is missing");
+  }
+
+  if (attachments.length) {
+    const rawMime = await buildRawMimeEmail({
+      fromName,
+      fromEmail,
+      replyTo,
+      to,
+      subject,
+      text: text || subject,
+      html,
+      attachments: attachments.map((attachment) => ({
+        ...attachment,
+        disposition: attachment.disposition || "attachment",
+      })),
+    });
+
+    return sendEmailCommand({
+      FromEmailAddress: `${fromName} <${fromEmail}>`,
+      Destination: {
+        ToAddresses: [to],
+      },
+      ReplyToAddresses: replyTo ? [replyTo] : undefined,
+      Content: {
+        Raw: {
+          Data: Buffer.from(rawMime, "utf8"),
+        },
+      },
+      EmailTags: [
+        { Name: "mode", Value: "transactional" },
+        { Name: "recipientEmail", Value: to },
+        ...tags,
+      ],
+      ConfigurationSetName: env.sesConfigurationSet || undefined,
+    });
   }
 
   return sendEmailCommand({

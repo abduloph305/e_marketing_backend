@@ -11,12 +11,13 @@ import { buildNextRecurringRun } from "../utils/campaignRecurrence.js";
 import { sendCampaign as sendCampaignThroughSes } from "./sesService.js";
 import { storeEmailEvent } from "./emailEventService.js";
 import { buildSegmentQuery, normalizeSegmentDefinition } from "../utils/segmentEngine.js";
+import { buildWebsiteScopeMatch, combineAudienceMatches } from "../utils/audienceWebsiteScope.js";
 import { isSubscriberEligibleForEmail } from "../utils/emailEligibility.js";
 import { assertEmailQuota, recordEmailUsage } from "./billingService.js";
 
 const campaignPopulate = [
   { path: "templateId" },
-  { path: "segmentId", select: "name definition rules" },
+  { path: "segmentId", select: "name definition rules websiteScope" },
 ];
 
 const claimDueCampaign = async (campaignId) => {
@@ -40,16 +41,20 @@ const claimDueCampaign = async (campaignId) => {
 
 const buildCampaignRecipients = async (campaign) => {
   const vendorMatch = campaign.vendorId ? { vendorId: campaign.vendorId } : {};
-  let match = { ...vendorMatch, status: "subscribed" };
+  const baseMatch = combineAudienceMatches(
+    vendorMatch,
+    { status: "subscribed" },
+    buildWebsiteScopeMatch(campaign.websiteScope || {}),
+    buildWebsiteScopeMatch(campaign.segmentId?.websiteScope || {}),
+  );
+  let match = baseMatch;
 
   const definition = normalizeSegmentDefinition(
     campaign.segmentId?.definition || { rules: campaign.segmentId?.rules || [] },
   );
 
   if (definition.filters.length) {
-    match = {
-      $and: [{ ...vendorMatch, status: "subscribed" }, buildSegmentQuery(definition)],
-    };
+    match = combineAudienceMatches(baseMatch, buildSegmentQuery(definition));
   }
 
   const suppressedEmails = await SuppressionEntry.find(vendorMatch).select("email -_id").lean();
@@ -180,7 +185,7 @@ const dispatchCampaign = async (campaignId, { mode = "manual", scopeMatch = {} }
     { returnDocument: "after" }
   )
     .populate({ path: "templateId", select: "name subject previewText" })
-    .populate({ path: "segmentId", select: "name" });
+    .populate({ path: "segmentId", select: "name websiteScope" });
 
   await updateCampaignCounters(campaign._id);
   await recordEmailUsage({
@@ -216,7 +221,7 @@ const dispatchCampaign = async (campaignId, { mode = "manual", scopeMatch = {} }
 
       updatedCampaign = await EmailCampaign.findById(campaign._id)
         .populate({ path: "templateId", select: "name subject previewText" })
-        .populate({ path: "segmentId", select: "name" });
+        .populate({ path: "segmentId", select: "name websiteScope" });
     }
   }
 

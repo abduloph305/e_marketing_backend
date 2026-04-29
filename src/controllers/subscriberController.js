@@ -1,15 +1,18 @@
+import mongoose from "mongoose";
 import CampaignRecipient from "../models/CampaignRecipient.js";
 import EmailEvent from "../models/EmailEvent.js";
 import Subscriber, {
   subscriberSources,
   subscriberStatuses,
 } from "../models/Subscriber.js";
+import SellersLoginWebsite from "../models/SellersLoginWebsite.js";
 import SuppressionEntry from "../models/SuppressionEntry.js";
+import { env } from "../config/env.js";
 import { triggerWorkflowExecutions } from "../services/automationService.js";
-import { syncWebsiteAudience } from "../services/websiteAudienceSyncService.js";
+import { syncVendorCustomersFromSellersLogin } from "../services/sellersloginAudienceSyncService.js";
 import { inferDeviceType } from "../utils/device.js";
 import { buildSubscriberMatch } from "../utils/subscriberFilters.js";
-import { buildVendorMatch, withVendorScope, withVendorWrite } from "../utils/vendorScope.js";
+import { buildVendorMatch, getRequestVendorId, withVendorScope, withVendorWrite } from "../utils/vendorScope.js";
 
 const normalizeTags = (tags = []) =>
   Array.from(
@@ -35,6 +38,33 @@ const normalizeCustomFields = (customFields = {}) => {
 
   return customFields;
 };
+
+const normalizeId = (value = "") => String(value || "").trim();
+
+const buildApiUrl = (baseUrl = "", path = "") => {
+  const base = String(baseUrl || "").trim().replace(/\/+$/, "");
+  const suffix = String(path || "").trim().replace(/^\/+/, "");
+  return base && suffix ? `${base}/${suffix}` : "";
+};
+
+const fetchJson = async (url, options = {}) => {
+  const response = await fetch(url, {
+    ...options,
+    headers: {
+      "content-type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const data = await response.json().catch(() => ({}));
+  return { response, data };
+};
+
+const getInternalSecret = () =>
+  normalizeId(
+    env.ophmateWebhookSecret ||
+      process.env.MARKETING_WEBHOOK_SECRET ||
+      process.env.MARKETING_INTERNAL_SECRET,
+  );
 
 const resolveSourceLocation = (subscriber = {}) => {
   const sourceLocation = String(subscriber.sourceLocation || "").trim();
@@ -312,9 +342,6 @@ const buildDetailPayload = async (subscriber) => {
 
 const runBestEffortCleanup = async () => {
   try {
-    console.log("[audience] refresh started");
-    const result = await syncWebsiteAudience();
-
     const normalizedComplaints = await Subscriber.updateMany(
       { status: "complained" },
       {
@@ -325,9 +352,6 @@ const runBestEffortCleanup = async () => {
     );
 
     console.log("[audience] refresh completed", {
-      mainWebsite: result.mainWebsite?.users || 0,
-      vendorWebsite: result.vendorWebsite?.users || 0,
-      deletedCount: result.deletedCount || 0,
       complaintToBlockedCount: normalizedComplaints.modifiedCount || 0,
     });
   } catch (error) {
@@ -335,24 +359,211 @@ const runBestEffortCleanup = async () => {
   }
 };
 
-const getSubscriberMeta = async (_req, res) =>
-  res.json({
+const getWebsiteDisplayName = (website = {}) =>
+  String(
+    website.name ||
+      website.business_name ||
+      website.website_slug ||
+      website.template_name ||
+      website.template_key ||
+      "Website",
+  ).trim();
+
+const normalizeWebsiteOption = (item = {}) => {
+  const websiteId = String(item.websiteId || item._id?.websiteId || "").trim();
+  const websiteSlug = String(item.websiteSlug || item._id?.websiteSlug || "").trim();
+  const websiteName = String(item.websiteName || item._id?.websiteName || "").trim();
+  const label = websiteName || websiteSlug || websiteId || "Website";
+
+  return {
+    id: [websiteId, websiteSlug, websiteName].join("::"),
+    websiteId,
+    websiteSlug,
+    websiteName,
+    label,
+    count: item.count || 0,
+  };
+};
+
+const mergeWebsiteOptions = (websites = [], counts = []) => {
+  const countByIdentity = new Map();
+
+  counts.forEach((item) => {
+    [item.websiteId, item.websiteSlug, item.websiteName]
+      .map(normalizeId)
+      .filter(Boolean)
+      .forEach((key) => countByIdentity.set(key, item.count || 0));
+  });
+
+  const merged = new Map();
+  const addOption = (option = {}) => {
+    const normalized = normalizeWebsiteOption(option);
+    if (!normalized.id) {
+      return;
+    }
+
+    const count =
+      countByIdentity.get(normalized.websiteId) ||
+      countByIdentity.get(normalized.websiteSlug) ||
+      countByIdentity.get(normalized.websiteName) ||
+      normalized.count ||
+      0;
+
+    merged.set(normalized.id, {
+      ...normalized,
+      count,
+    });
+  };
+
+  websites.forEach((website) => {
+    addOption({
+      websiteId: normalizeId(website._id || website.id),
+      websiteSlug: normalizeId(website.website_slug),
+      websiteName: getWebsiteDisplayName(website),
+      count: 0,
+    });
+  });
+  counts.forEach(addOption);
+
+  return Array.from(merged.values()).sort((left, right) => {
+    if (left.count !== right.count) {
+      return right.count - left.count;
+    }
+
+    return left.label.localeCompare(right.label);
+  });
+};
+
+const fetchSellersLoginVendorWebsites = async (vendorId = "") => {
+  const url = buildApiUrl(env.sellersloginApiUrl, "internal/marketing/vendor-websites");
+  const secret = getInternalSecret();
+
+  if (!url || !secret || !vendorId) {
+    return [];
+  }
+
+  const query = new URLSearchParams({ vendor_id: vendorId });
+  const { response, data } = await fetchJson(`${url}?${query.toString()}`, {
+    headers: {
+      "x-integration-secret": secret,
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(data?.message || "Unable to load SellersLogin websites");
+  }
+
+  return Array.isArray(data?.websites) ? data.websites : [];
+};
+
+const getSubscriberWebsiteOptions = async (req = {}) => {
+  const vendorMatch = buildVendorMatch(req);
+  const vendorId = normalizeId(vendorMatch.vendorId);
+  const allowedWebsiteIds = Array.isArray(req.admin?.sellersloginWebsiteAccess)
+    ? req.admin.sellersloginWebsiteAccess.map(normalizeId).filter(Boolean)
+    : [];
+  const websiteQuery = {};
+
+  if (vendorId) {
+    websiteQuery.vendor_id = mongoose.Types.ObjectId.isValid(vendorId)
+      ? { $in: [vendorId, new mongoose.Types.ObjectId(vendorId)] }
+      : vendorId;
+  }
+
+  if (allowedWebsiteIds.length) {
+    websiteQuery._id = {
+      $in: allowedWebsiteIds
+        .filter((item) => mongoose.Types.ObjectId.isValid(item))
+        .map((item) => new mongoose.Types.ObjectId(item)),
+    };
+  }
+
+  const [sourceWebsitesResult, rows] = await Promise.allSettled([
+    fetchSellersLoginVendorWebsites(vendorId),
+    Subscriber.aggregate([
+      { $match: vendorMatch },
+      {
+        $project: {
+          websiteId: { $ifNull: ["$customFields.audienceSourceWebsiteId", ""] },
+          websiteSlug: { $ifNull: ["$customFields.audienceSourceWebsiteSlug", ""] },
+          websiteName: { $ifNull: ["$customFields.audienceSourceWebsiteName", ""] },
+        },
+      },
+      {
+        $match: {
+          $or: [
+            { websiteId: { $nin: ["", null] } },
+            { websiteSlug: { $nin: ["", null] } },
+            { websiteName: { $nin: ["", null] } },
+          ],
+        },
+      },
+      {
+        $group: {
+          _id: {
+            websiteId: "$websiteId",
+            websiteSlug: "$websiteSlug",
+            websiteName: "$websiteName",
+          },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { "_id.websiteName": 1, "_id.websiteSlug": 1, "_id.websiteId": 1 } },
+    ]),
+  ]);
+  const sourceWebsites =
+    sourceWebsitesResult.status === "fulfilled"
+      ? sourceWebsitesResult.value.filter(
+          (website) =>
+            !allowedWebsiteIds.length ||
+            allowedWebsiteIds.includes(normalizeId(website.website_id || website.id)),
+        )
+      : [];
+  const countRows = rows.status === "fulfilled" ? rows.value.map(normalizeWebsiteOption) : [];
+  const localWebsites = sourceWebsites.length
+    ? []
+    : await SellersLoginWebsite.find(websiteQuery)
+        .select("_id vendor_id template_key template_name name business_name website_slug is_default createdAt")
+        .sort({ is_default: -1, createdAt: -1 })
+        .lean();
+  const websites = sourceWebsites.length
+    ? sourceWebsites.map((website) => ({
+        _id: website.website_id || website.id,
+        name: website.website_name,
+        website_slug: website.website_slug,
+        template_name: website.template_name,
+        template_key: website.template_key,
+        is_default: website.is_default,
+        createdAt: website.createdAt,
+      }))
+    : localWebsites;
+
+  return mergeWebsiteOptions(websites, countRows);
+};
+
+const getSubscriberMeta = async (req, res) => {
+  const websites = await getSubscriberWebsiteOptions(req);
+
+  return res.json({
     statuses: subscriberStatuses,
     sources: subscriberSources,
+    websites,
   });
+};
 
 const getSubscriberSummary = async (req, res) => {
   try {
     await runBestEffortCleanup();
     const vendorMatch = buildVendorMatch(req);
+    const scopedMatch = withVendorScope(req, buildSubscriberMatch(req.query));
 
-    const [statusCounts, totals, sourceDocs] = await Promise.all([
+    const [statusCounts, totals, sourceDocs, websites] = await Promise.all([
       Subscriber.aggregate([
-        { $match: vendorMatch },
+        { $match: scopedMatch },
         { $group: { _id: "$status", count: { $sum: 1 } } },
       ]),
       Subscriber.aggregate([
-        { $match: vendorMatch },
+        { $match: scopedMatch },
         {
           $group: {
             _id: null,
@@ -363,9 +574,10 @@ const getSubscriberSummary = async (req, res) => {
           },
         },
       ]),
-      Subscriber.find(vendorMatch)
+      Subscriber.find(scopedMatch)
         .select("source sourceLocation customFields")
         .lean(),
+      getSubscriberWebsiteOptions(req),
     ]);
 
     const byStatus = statusCounts.reduce((accumulator, item) => {
@@ -397,6 +609,7 @@ const getSubscriberSummary = async (req, res) => {
       totalOrders: totals[0]?.totalOrders || 0,
       totalSpent: Number(totals[0]?.totalSpent || 0),
       activeCount: byStatus.subscribed || 0,
+      websites,
       riskCount:
         (byStatus.unsubscribed || 0) +
         (byStatus.bounced || 0) +
@@ -415,6 +628,27 @@ const getSubscriberSummary = async (req, res) => {
       totalSpent: 0,
       activeCount: 0,
       riskCount: 0,
+      websites: [],
+    });
+  }
+};
+
+const syncMyVendorAudience = async (req, res) => {
+  const vendorId = getRequestVendorId(req);
+  if (!vendorId) {
+    return res.status(400).json({ message: "Vendor account required" });
+  }
+
+  try {
+    const websiteId = String(req.body?.websiteId || req.query?.websiteId || "").trim();
+    const result = await syncVendorCustomersFromSellersLogin({ vendorId, websiteId });
+    return res.json({
+      message: result.skipped ? "Audience sync skipped" : "Audience synced",
+      result,
+    });
+  } catch (error) {
+    return res.status(502).json({
+      message: error?.message || "Unable to sync SellersLogin customers",
     });
   }
 };
@@ -774,5 +1008,6 @@ export {
   getSubscriberSummary,
   importSubscribersFromCsv,
   listSubscribers,
+  syncMyVendorAudience,
   updateSubscriber,
 };

@@ -1,6 +1,11 @@
 const locationFields = ["country", "state", "city"];
 const numberFields = ["totalOrders", "totalSpent", "engagementScore"];
 const dateFields = ["lastOpenAt", "lastClickAt", "lastOrderDate", "lastEmailSentAt", "lastActivityAt"];
+const websiteFilterFields = [
+  ["websiteId", "customFields.audienceSourceWebsiteId"],
+  ["websiteSlug", "customFields.audienceSourceWebsiteSlug"],
+  ["websiteName", "customFields.audienceSourceWebsiteName"],
+];
 
 const normalizeArray = (value) => {
   if (!value) {
@@ -206,6 +211,9 @@ const buildSubscriberMatch = (input = {}) => {
     city,
     source,
     sourceLocation,
+    websiteId,
+    websiteSlug,
+    websiteName,
     rules = [],
   } = input;
 
@@ -237,6 +245,23 @@ const buildSubscriberMatch = (input = {}) => {
           : { $in: sourceLocations },
     });
   }
+
+  websiteFilterFields.forEach(([inputKey, documentPath]) => {
+    const values = normalizeArray({ websiteId, websiteSlug, websiteName }[inputKey]);
+
+    if (!values.length) {
+      return;
+    }
+
+    conditions.push({
+      [documentPath]:
+        values.length === 1
+          ? new RegExp(`^${escapeRegex(values[0])}$`, "i")
+          : {
+              $in: values.map((value) => new RegExp(`^${escapeRegex(value)}$`, "i")),
+            },
+    });
+  });
 
   const tagValues = normalizeArray(tags);
   if (tagValues.length) {

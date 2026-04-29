@@ -299,7 +299,7 @@ const attributeCampaignConversion = async ({
 const buildCampaignDetailPayload = async (campaignId, scopeMatch = {}) => {
   const campaign = await EmailCampaign.findOne({ _id: campaignId, ...scopeMatch })
     .populate({ path: "templateId", select: "name subject previewText" })
-    .populate({ path: "segmentId", select: "name" });
+    .populate({ path: "segmentId", select: "name websiteScope" });
 
   if (!campaign) {
     return null;

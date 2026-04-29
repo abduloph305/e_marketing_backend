@@ -96,6 +96,29 @@ const normalizeEmail = (value = "") => String(value).trim().toLowerCase();
 const firstTruthy = (...values) =>
   values.find((value) => String(value || "").trim()) || "";
 
+const resolveVendorId = (payload = {}) => {
+  const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
+  const directVendorId = firstTruthy(
+    payload.vendorId,
+    payload.vendor_id,
+    payload.sellersloginVendorId,
+    payload.sellerslogin_vendor_id,
+    metadata.vendorId,
+    metadata.vendor_id,
+    metadata.sellersloginVendorId,
+  );
+
+  if (directVendorId) {
+    return String(directVendorId).trim();
+  }
+
+  const itemVendorId = (Array.isArray(payload.items) ? payload.items : [])
+    .map((item) => firstTruthy(item?.vendorId, item?.vendor_id))
+    .find(Boolean);
+
+  return String(itemVendorId || "").trim();
+};
+
 const resolveMarketingAttribution = (payload = {}) => {
   const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
 
@@ -267,8 +290,10 @@ const resolveSubscriberPayload = (payload = {}) => {
   const items = Array.isArray(payload.items) ? payload.items.map(normalizeItem) : [];
   const shippingAddress = payload.shippingAddress ? normalizeShippingAddress(payload.shippingAddress) : null;
   const { orderDate, orderTime } = toDateParts(payload.orderPlacedAt || payload.timestamp || new Date().toISOString());
+  const vendorId = resolveVendorId(payload);
 
   return {
+    vendorId,
     email,
     firstName,
     lastName,
@@ -279,6 +304,7 @@ const resolveSubscriberPayload = (payload = {}) => {
     customFields: {
       ...(typeof payload.customFields === "object" && payload.customFields ? payload.customFields : {}),
       ophmateUserId: payload.userId || payload.customerId || payload.externalUserId || "",
+      ophmateVendorId: vendorId,
       ophmateOrderId: payload.orderId || payload.sourceEventId || "",
       ophmateOrderNumber: payload.orderNumber || "",
       ophmateOrderStatus: payload.orderStatus || "",
@@ -330,17 +356,23 @@ const resolveSubscriberPayload = (payload = {}) => {
 
 const upsertSubscriberFromEvent = async (payload) => {
   const email = normalizeEmail(payload.email || payload.recipientEmail || "");
+  const vendorId = resolveVendorId(payload);
 
   if (!email) {
     throw new Error("Email is required");
   }
 
+  if (!vendorId) {
+    throw new Error("Vendor id is required");
+  }
+
   const nextSubscriberPayload = resolveSubscriberPayload(payload);
-  const existing = await Subscriber.findOne({ email });
+  const existing = await Subscriber.findOne({ vendorId, email });
 
   if (!existing) {
     const subscriber = await Subscriber.create({
       ...nextSubscriberPayload,
+      vendorId,
       email,
       lastActivityAt: new Date(),
       engagementScore: payload.eventType === "user.registered" ? 0 : undefined,
@@ -488,12 +520,14 @@ const upsertSubscriberFromEvent = async (payload) => {
 
 const buildEventQuery = (payload = {}) => {
   const sourceEventId = String(payload.sourceEventId || payload.eventId || payload.orderId || "").trim();
+  const vendorId = resolveVendorId(payload);
 
   if (!sourceEventId) {
     return null;
   }
 
   return {
+    vendorId,
     source: String(payload.source || "ophmate").trim().toLowerCase(),
     sourceEventId,
     eventType: String(payload.eventType || "").trim(),
@@ -503,6 +537,7 @@ const buildEventQuery = (payload = {}) => {
 const createIntegrationEvent = async (payload, subscriberId, status = "received", errorMessage = "") => {
   const query = buildEventQuery(payload);
   const baseDoc = {
+    vendorId: resolveVendorId(payload),
     source: String(payload.source || "ophmate").trim().toLowerCase(),
     eventType: String(payload.eventType || "").trim(),
     sourceEventId: String(payload.sourceEventId || payload.eventId || payload.orderId || "").trim(),
@@ -573,6 +608,7 @@ const ingestOphmateEvent = async (req, res) => {
 
   const payload = {
     ...(req.body || {}),
+    vendorId: resolveVendorId(req.body || {}),
     source: String(req.body?.source || "ophmate").trim().toLowerCase(),
     sourceLocation: normalizeSourceLocation(req.body || {}),
     eventType: String(req.body?.eventType || "").trim(),
@@ -587,6 +623,15 @@ const ingestOphmateEvent = async (req, res) => {
     return res.status(400).json({ message: "Email is required" });
   }
 
+  if (!payload.vendorId) {
+    return res.status(202).json({
+      success: true,
+      skipped: true,
+      reason: "missing_vendor_id",
+      message: "Event skipped because it is not tied to a vendor",
+    });
+  }
+
   try {
     const subscriber = await upsertSubscriberFromEvent(payload);
     const storedEvent = await createIntegrationEvent(payload, subscriber?._id, "received");
@@ -599,6 +644,7 @@ const ingestOphmateEvent = async (req, res) => {
         recipientId: attribution.recipientId || null,
         messageId: attribution.messageId || null,
         email: payload.email,
+        vendorId: payload.vendorId,
         convertedAt: payload.timestamp ? new Date(payload.timestamp) : new Date(),
         revenueAttributed: resolveConversionRevenue(payload),
         sourceEventId: resolveConversionSourceId(payload),
@@ -615,6 +661,7 @@ const ingestOphmateEvent = async (req, res) => {
         subscriberId: subscriber?._id || null,
         context: {
           source: "ophmate",
+          vendorId: payload.vendorId,
           sourceLocation: normalizeSourceLocation(payload),
           eventType: payload.eventType,
           sourceEventId: payload.sourceEventId || payload.eventId || payload.orderId || "",

@@ -269,11 +269,20 @@ const upsertSiteUsers = async (site, users = []) => {
 
   for (const user of users) {
     const payload = normalizeSiteUser(user, site);
-    if (!payload.email) {
+    const vendorId = String(
+      payload.customFields?.audienceSourceVendorId ||
+        user.vendor_id ||
+        user.vendorId ||
+        "",
+    ).trim();
+
+    if (!payload.email || !vendorId) {
       continue;
     }
 
-    const existing = await Subscriber.findOne({ email: payload.email });
+    payload.vendorId = vendorId;
+
+    const existing = await Subscriber.findOne({ vendorId, email: payload.email });
     const nextSourceLocations = existing
       ? mergeSourceLocations(existing, site.sourceLocation)
       : [site.sourceLocation];
@@ -317,17 +326,18 @@ const upsertSiteUsers = async (site, users = []) => {
   return { imported, updated };
 };
 
-const cleanupStaleSyncedUsers = async (activeEmails = new Set()) => {
+const cleanupStaleSyncedUsers = async (activePairs = new Set()) => {
   const staleSubscribers = await Subscriber.find({
     "customFields.audienceSynced": true,
   })
-    .select("_id email")
+    .select("_id email vendorId")
     .lean();
 
   const staleIds = staleSubscribers
     .filter((subscriber) => {
       const email = normalizeEmail(subscriber?.email || "");
-      return email && !activeEmails.has(email);
+      const vendorId = String(subscriber?.vendorId || "").trim();
+      return email && vendorId && !activePairs.has(`${vendorId}:${email}`);
     })
     .map((subscriber) => subscriber._id);
 
@@ -347,7 +357,7 @@ const syncWebsiteAudience = async () => {
     deletedCount: 0,
   };
 
-  const activeEmails = new Set();
+  const activePairs = new Set();
 
   for (const site of SITE_DEFINITIONS) {
     const cache = await refreshSiteCache(site);
@@ -358,8 +368,9 @@ const syncWebsiteAudience = async () => {
     const syncResult = await upsertSiteUsers(site, cache.users);
     cache.users.forEach((user) => {
       const email = normalizeEmail(user?.email || "");
-      if (email) {
-        activeEmails.add(email);
+      const vendorId = String(user?.vendor_id || user?.vendorId || "").trim();
+      if (email && vendorId) {
+        activePairs.add(`${vendorId}:${email}`);
       }
     });
 
@@ -378,8 +389,8 @@ const syncWebsiteAudience = async () => {
     }
   }
 
-  if (configuredSites.length === SITE_DEFINITIONS.length && activeEmails.size) {
-    results.deletedCount = await cleanupStaleSyncedUsers(activeEmails);
+  if (configuredSites.length === SITE_DEFINITIONS.length && activePairs.size) {
+    results.deletedCount = await cleanupStaleSyncedUsers(activePairs);
   }
   return results;
 };

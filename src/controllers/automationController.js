@@ -78,7 +78,7 @@ const getAutomationMeta = async (req, res) => {
   const vendorMatch = buildVendorMatch(req);
   const [templates, segments] = await Promise.all([
     EmailTemplate.find(vendorMatch).select("name subject").sort({ updatedAt: -1 }),
-    Segment.find(vendorMatch).select("name").sort({ updatedAt: -1 }),
+    Segment.find(vendorMatch).select("name websiteScope").sort({ updatedAt: -1 }),
   ]);
 
   return res.json({
@@ -99,7 +99,7 @@ const listWorkflows = async (req, res) => {
 
   const [workflows, total] = await Promise.all([
     AutomationWorkflow.find(match)
-      .populate({ path: "entrySegmentId", select: "name" })
+      .populate({ path: "entrySegmentId", select: "name websiteScope" })
       .sort({ updatedAt: -1 })
       .skip((page - 1) * limit)
       .limit(limit),

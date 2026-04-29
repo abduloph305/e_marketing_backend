@@ -2,6 +2,7 @@ import express from "express";
 import {
   createPlan,
   createRazorpayCheckoutOrder,
+  downloadMyInvoice,
   getMySubscription,
   listInvoices,
   listMyInvoices,
@@ -11,6 +12,7 @@ import {
   updatePlan,
   updateSubscription,
   verifyRazorpayCheckoutPayment,
+  viewMyInvoice,
 } from "../controllers/billingController.js";
 import { permitRoles, protectAdmin } from "../middleware/authMiddleware.js";
 
@@ -20,6 +22,8 @@ router.use(protectAdmin);
 
 router.get("/me", getMySubscription);
 router.get("/me/invoices", listMyInvoices);
+router.get("/me/invoices/:id", viewMyInvoice);
+router.get("/me/invoices/:id/download", downloadMyInvoice);
 router.get("/plans", listPlans);
 router.post("/razorpay/orders", createRazorpayCheckoutOrder);
 router.post("/razorpay/verify", verifyRazorpayCheckoutPayment);

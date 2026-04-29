@@ -13,6 +13,12 @@ import {
   getSubscriptionSnapshot,
   verifyPlanCheckoutPayment,
 } from "../services/billingService.js";
+import {
+  buildInvoiceHtml,
+  buildInvoicePdf,
+  getInvoiceDocumentData,
+  sendInvoiceEmail,
+} from "../services/invoiceDocumentService.js";
 import { getRequestVendorId } from "../utils/vendorScope.js";
 
 const toVendorMap = async () => {
@@ -127,12 +133,16 @@ const updateSubscription = async (req, res) => {
   if (gateway === "manual" && status === "active") {
     const amount = billingCycle === "yearly" ? plan.yearlyPrice : plan.monthlyPrice;
     const taxAmount = Math.round(Number(amount || 0) * 0.18);
-    await createManualPaymentAndInvoice({
+    const { invoice } = await createManualPaymentAndInvoice({
       vendorId: subscription.vendorId,
       subscription,
       plan,
       amount,
       taxAmount,
+    });
+
+    sendInvoiceEmail({ invoiceId: invoice._id, vendorId: subscription.vendorId }).catch((error) => {
+      console.error("Invoice email failed", error);
     });
   }
 
@@ -190,6 +200,40 @@ const listMyInvoices = async (req, res) => {
 
   const invoices = await BillingInvoice.find({ vendorId }).sort({ issuedAt: -1 }).limit(50).lean();
   return res.json({ invoices });
+};
+
+const viewMyInvoice = async (req, res) => {
+  const vendorId = getRequestVendorId(req);
+  if (!vendorId) {
+    return res.status(400).json({ message: "Vendor account required" });
+  }
+
+  const data = await getInvoiceDocumentData({ invoiceId: req.params.id, vendorId });
+  if (!data) {
+    return res.status(404).json({ message: "Invoice not found" });
+  }
+
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  return res.send(buildInvoiceHtml(data));
+};
+
+const downloadMyInvoice = async (req, res) => {
+  const vendorId = getRequestVendorId(req);
+  if (!vendorId) {
+    return res.status(400).json({ message: "Vendor account required" });
+  }
+
+  const data = await getInvoiceDocumentData({ invoiceId: req.params.id, vendorId });
+  if (!data) {
+    return res.status(404).json({ message: "Invoice not found" });
+  }
+
+  const pdf = buildInvoicePdf(data);
+  const filename = `SellersLogin-${data.invoice.invoiceNumber}.pdf`;
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.setHeader("Content-Length", pdf.length);
+  return res.send(pdf);
 };
 
 const createRazorpayCheckoutOrder = async (req, res) => {
@@ -258,6 +302,10 @@ const verifyRazorpayCheckoutPayment = async (req, res) => {
       razorpaySignature,
     });
 
+    sendInvoiceEmail({ invoiceId: result.invoice._id, vendorId }).catch((error) => {
+      console.error("Invoice email failed", error);
+    });
+
     return res.json({
       message: "Payment verified and plan activated",
       payment: result.payment,
@@ -272,6 +320,7 @@ const verifyRazorpayCheckoutPayment = async (req, res) => {
 export {
   createPlan,
   createRazorpayCheckoutOrder,
+  downloadMyInvoice,
   getMySubscription,
   listInvoices,
   listMyInvoices,
@@ -281,4 +330,5 @@ export {
   updatePlan,
   updateSubscription,
   verifyRazorpayCheckoutPayment,
+  viewMyInvoice,
 };

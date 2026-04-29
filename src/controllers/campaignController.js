@@ -14,10 +14,11 @@ import {
 import { notifyVendorActivity } from "../services/adminNotificationService.js";
 import { normalizeRecurrenceInterval, normalizeRecurrenceUnit } from "../utils/campaignRecurrence.js";
 import { buildVendorMatch, withVendorScope, withVendorWrite } from "../utils/vendorScope.js";
+import { normalizeWebsiteScope } from "../utils/audienceWebsiteScope.js";
 
 const campaignPopulate = [
   { path: "templateId", select: "name subject previewText" },
-  { path: "segmentId", select: "name" },
+  { path: "segmentId", select: "name websiteScope" },
 ];
 
 const parseDateTimeInput = (value) => {
@@ -78,6 +79,7 @@ const buildCampaignWritePayload = (payload, existingCampaign = null) => {
     replyTo: payload.replyTo?.trim().toLowerCase() || "",
     templateId: payload.templateId || null,
     segmentId: payload.segmentId || null,
+    websiteScope: normalizeWebsiteScope(payload.websiteScope || {}),
     status: shouldBeScheduled
       ? "scheduled"
       : requestedStatus || existingCampaign?.status || "draft",
@@ -314,6 +316,7 @@ const duplicateCampaign = async (req, res) => {
       replyTo: existingCampaign.replyTo || "",
       templateId: existingCampaign.templateId,
       segmentId: existingCampaign.segmentId || null,
+      websiteScope: existingCampaign.websiteScope || {},
       status: "draft",
       scheduledAt: null,
       sentAt: null,

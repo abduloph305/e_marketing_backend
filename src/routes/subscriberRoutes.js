@@ -10,6 +10,7 @@ import {
   getSubscriberMeta,
   getSubscriberSummary,
   importSubscribersFromCsv,
+  syncMyVendorAudience,
   createSubscriber,
   updateSubscriber,
   deleteSubscriber,
@@ -22,6 +23,7 @@ router.use(protectAdmin);
 
 router.get("/meta", getSubscriberMeta);
 router.get("/summary", getSubscriberSummary);
+router.post("/sync/sellerslogin", syncMyVendorAudience);
 router.get("/", listSubscribers);
 router.post("/filter", filterSubscribers);
 router.post("/bulk/tags", bulkTagSubscribers);

@@ -62,6 +62,15 @@ const automationWorkflowSchema = new mongoose.Schema(
       ref: "Segment",
       default: null,
     },
+    websiteScope: {
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({
+        websiteId: "",
+        websiteSlug: "",
+        websiteName: "",
+        label: "",
+      }),
+    },
     executionCount: {
       type: Number,
       default: 0,

@@ -6,6 +6,11 @@ import EmailTemplate from "../models/EmailTemplate.js";
 import Segment from "../models/Segment.js";
 import Subscriber from "../models/Subscriber.js";
 import { buildSegmentQuery, normalizeSegmentDefinition } from "../utils/segmentEngine.js";
+import {
+  buildWebsiteScopeMatch,
+  combineAudienceMatches,
+  normalizeWebsiteScope,
+} from "../utils/audienceWebsiteScope.js";
 import { isSubscriberEligibleForEmail } from "../utils/emailEligibility.js";
 import { sendAutomationEmail } from "./sesService.js";
 
@@ -25,6 +30,7 @@ const normalizeWorkflowPayload = (payload = {}) => ({
   trigger: payload.trigger,
   triggerConfig: payload.triggerConfig || {},
   entrySegmentId: payload.entrySegmentId || null,
+  websiteScope: normalizeWebsiteScope(payload.websiteScope || {}),
   status: payload.status || "draft",
   isActive: Boolean(payload.isActive),
 });
@@ -118,7 +124,7 @@ const buildWorkflowSummary = async (workflow) => {
 const buildWorkflowDetailPayload = async (workflowId, scopeMatch = {}) => {
   const workflow = await AutomationWorkflow.findOne({ _id: workflowId, ...scopeMatch }).populate({
     path: "entrySegmentId",
-    select: "name definition rules",
+    select: "name definition rules websiteScope",
   });
 
   if (!workflow) {
@@ -243,22 +249,24 @@ const getDelayMilliseconds = (config = {}) => {
 };
 
 const subscriberMatchesWorkflow = async (workflow, subscriber) => {
-  if (!workflow.entrySegmentId) {
-    return true;
-  }
-
   if (!subscriber?._id) {
     return false;
   }
 
-  const segment = await Segment.findById(workflow.entrySegmentId).select("definition rules").lean();
+  const segment = workflow.entrySegmentId
+    ? await Segment.findById(workflow.entrySegmentId).select("definition rules websiteScope").lean()
+    : null;
 
-  if (!segment) {
+  if (workflow.entrySegmentId && !segment) {
     return false;
   }
 
-  const definition = normalizeSegmentDefinition(segment.definition || { rules: segment.rules || [] });
-  const match = buildSegmentQuery(definition);
+  const definition = normalizeSegmentDefinition(segment?.definition || { rules: segment?.rules || [] });
+  const match = combineAudienceMatches(
+    buildWebsiteScopeMatch(workflow.websiteScope || {}),
+    buildWebsiteScopeMatch(segment?.websiteScope || {}),
+    definition.filters.length ? buildSegmentQuery(definition) : {},
+  );
   const matchedSubscriber = await Subscriber.findOne({
     _id: subscriber._id,
     ...match,

@@ -4,6 +4,7 @@ import Admin from "../models/Admin.js";
 import { env } from "../config/env.js";
 import { notifyVendorLogin } from "../services/adminNotificationService.js";
 import { ensureVendorSubscription } from "../services/billingService.js";
+import { syncVendorCustomersFromSellersLogin } from "../services/sellersloginAudienceSyncService.js";
 
 const buildToken = (adminId) =>
   jwt.sign({ id: adminId }, env.jwtSecret, { expiresIn: env.jwtExpiresIn });
@@ -67,7 +68,10 @@ const loginWithSellersLoginVendor = async ({ email, password }) => {
     throw error;
   }
 
-  return upstreamUser;
+  return {
+    user: upstreamUser,
+    token: data.token || data.accessToken || data.access_token || "",
+  };
 };
 
 const upsertSellersLoginVendor = async (upstreamUser) => {
@@ -125,6 +129,22 @@ const upsertSellersLoginVendor = async (upstreamUser) => {
   });
 };
 
+const syncSellersLoginAudienceForVendor = async ({ vendor, sellersloginToken = "" }) => {
+  if (!vendor || vendor.role !== "vendor") {
+    return { skipped: true, reason: "not_vendor" };
+  }
+
+  const vendorId = vendor.sellersloginVendorId || vendor.id || vendor._id;
+  if (!vendorId || !sellersloginToken) {
+    return { skipped: true, reason: sellersloginToken ? "missing_vendor_id" : "missing_sellerslogin_token" };
+  }
+
+  return syncVendorCustomersFromSellersLogin({
+    vendorId,
+    token: sellersloginToken,
+  });
+};
+
 const loginAdmin = async (req, res) => {
   const { email, password } = req.body;
 
@@ -161,11 +181,30 @@ const loginAdmin = async (req, res) => {
 
       await notifyVendorLogin(admin);
 
+      let audienceSync = { skipped: true, reason: "not_vendor" };
+      if (admin.role === "vendor") {
+        loginWithSellersLoginVendor({ email: normalizedEmail, password })
+          .then((upstreamSession) =>
+            syncSellersLoginAudienceForVendor({
+              vendor: admin,
+              sellersloginToken: upstreamSession.token,
+            }),
+          )
+          .then((result) => {
+            console.log("SellersLogin customer audience sync completed", result);
+          })
+          .catch((error) => {
+            console.error("SellersLogin customer audience sync failed", error?.message || error);
+          });
+        audienceSync = { queued: true };
+      }
+
       return res.json({
         message: "Login successful",
         token,
         admin: safeUser,
         user: safeUser,
+        audienceSync,
       });
     }
   }
@@ -173,11 +212,13 @@ const loginAdmin = async (req, res) => {
   let vendorUser;
 
   try {
-    const upstreamUser = await loginWithSellersLoginVendor({
+    const upstreamSession = await loginWithSellersLoginVendor({
       email: normalizedEmail,
       password,
     });
+    const upstreamUser = upstreamSession.user;
     vendorUser = await upsertSellersLoginVendor(upstreamUser);
+    vendorUser._sellersloginToken = upstreamSession.token;
   } catch (error) {
     return res.status(error.status || 401).json({
       message: error.status ? error.message : "Invalid credentials",
@@ -190,6 +231,17 @@ const loginAdmin = async (req, res) => {
   );
   await ensureVendorSubscription(vendorUser.sellersloginVendorId || vendorUser.id);
 
+  let audienceSync = { queued: true };
+  try {
+    audienceSync = await syncSellersLoginAudienceForVendor({
+      vendor: vendorUser,
+      sellersloginToken: vendorUser._sellersloginToken,
+    });
+  } catch (error) {
+    audienceSync = { skipped: true, error: error?.message || "Audience sync failed" };
+    console.error("SellersLogin customer audience sync failed", error?.message || error);
+  }
+
   const token = buildToken(vendorUser.id);
   setAuthCookie(res, token);
   const safeUser = vendorUser.toSafeObject();
@@ -201,6 +253,7 @@ const loginAdmin = async (req, res) => {
     token,
     admin: safeUser,
     user: safeUser,
+    audienceSync,
   });
 };
 

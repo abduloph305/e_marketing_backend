@@ -26,6 +26,15 @@ const segmentSchema = new mongoose.Schema(
       type: [mongoose.Schema.Types.Mixed],
       default: [],
     },
+    websiteScope: {
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({
+        websiteId: "",
+        websiteSlug: "",
+        websiteName: "",
+        label: "",
+      }),
+    },
   },
   {
     timestamps: true,
