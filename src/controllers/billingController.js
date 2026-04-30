@@ -13,6 +13,20 @@ import {
   getSubscriptionSnapshot,
   verifyPlanCheckoutPayment,
 } from "../services/billingService.js";
+import CreditPack from "../models/CreditPack.js";
+import CreditTransaction from "../models/CreditTransaction.js";
+import PaygSettings from "../models/PaygSettings.js";
+import {
+  applyAdminWalletAdjustment,
+  createCreditPackCheckoutOrder,
+  ensureCreditWallet,
+  ensureDefaultCreditPacks,
+  ensurePaygSettings,
+  getAdminCreditOverview,
+  getWalletSnapshot,
+  normalizePackPayload,
+  verifyCreditPackCheckoutPayment,
+} from "../services/paygBillingService.js";
 import {
   buildInvoiceHtml,
   buildInvoicePdf,
@@ -192,6 +206,16 @@ const getMySubscription = async (req, res) => {
   return res.json(snapshot);
 };
 
+const getMyCredits = async (req, res) => {
+  const vendorId = getRequestVendorId(req);
+  if (!vendorId) {
+    return res.status(400).json({ message: "Vendor account required" });
+  }
+
+  const snapshot = await getWalletSnapshot(vendorId);
+  return res.json(snapshot);
+};
+
 const listMyInvoices = async (req, res) => {
   const vendorId = getRequestVendorId(req);
   if (!vendorId) {
@@ -282,6 +306,46 @@ const createRazorpayCheckoutOrder = async (req, res) => {
   }
 };
 
+const createCreditPackRazorpayOrder = async (req, res) => {
+  try {
+    const vendorId = getRequestVendorId(req);
+    const { packId } = req.body || {};
+
+    if (!vendorId) {
+      return res.status(400).json({ message: "Vendor account required" });
+    }
+
+    if (!packId) {
+      return res.status(400).json({ message: "Credit pack is required" });
+    }
+
+    const checkout = await createCreditPackCheckoutOrder({ vendorId, packId });
+    return res.status(201).json({
+      keyId: checkout.keyId,
+      order: {
+        id: checkout.order.id,
+        amount: checkout.order.amount,
+        currency: checkout.order.currency,
+      },
+      payment: {
+        id: checkout.payment._id,
+        amount: checkout.payment.amount,
+        taxAmount: checkout.payment.taxAmount,
+        totalAmount: checkout.payment.totalAmount,
+        currency: checkout.payment.currency,
+      },
+      pack: checkout.pack,
+      prefill: {
+        name: req.admin?.businessName || req.admin?.name || "",
+        email: req.admin?.email || "",
+        contact: req.admin?.phone || "",
+      },
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({ message: error.message || "Unable to create checkout order" });
+  }
+};
+
 const verifyRazorpayCheckoutPayment = async (req, res) => {
   try {
     const vendorId = getRequestVendorId(req);
@@ -317,18 +381,175 @@ const verifyRazorpayCheckoutPayment = async (req, res) => {
   }
 };
 
+const verifyCreditPackRazorpayPayment = async (req, res) => {
+  try {
+    const vendorId = getRequestVendorId(req);
+    const {
+      razorpay_order_id: razorpayOrderId,
+      razorpay_payment_id: razorpayPaymentId,
+      razorpay_signature: razorpaySignature,
+    } = req.body || {};
+
+    if (!vendorId) {
+      return res.status(400).json({ message: "Vendor account required" });
+    }
+
+    const result = await verifyCreditPackCheckoutPayment({
+      vendorId,
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+    });
+
+    sendInvoiceEmail({ invoiceId: result.invoice._id, vendorId }).catch((error) => {
+      console.error("Invoice email failed", error);
+    });
+
+    return res.json({
+      message: "Payment verified and credits added",
+      payment: result.payment,
+      invoice: result.invoice,
+      wallet: result.wallet,
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({ message: error.message || "Unable to verify payment" });
+  }
+};
+
+const getPaygSettings = async (_req, res) => {
+  const settings = await ensurePaygSettings();
+  return res.json({ settings });
+};
+
+const updatePaygSettings = async (req, res) => {
+  const payload = [
+    "creditExpiryMonths",
+    "lowBalanceWarningThreshold",
+    "dailySendLimitDefault",
+    "maxRecipientsPerCampaignDefault",
+  ].reduce((acc, key) => {
+    if (req.body[key] !== undefined) {
+      acc[key] = Number(req.body[key] || 0);
+    }
+    return acc;
+  }, {});
+
+  const settings = await PaygSettings.findOneAndUpdate(
+    { key: "global" },
+    { $set: payload },
+    { new: true, upsert: true, runValidators: true },
+  );
+
+  return res.json({ settings });
+};
+
+const listCreditPacks = async (_req, res) => {
+  const packs = await ensureDefaultCreditPacks();
+  return res.json({ packs });
+};
+
+const createCreditPack = async (req, res) => {
+  const payload = normalizePackPayload(req.body);
+  if (!payload.name || payload.credits <= 0) {
+    return res.status(400).json({ message: "Pack name and credits are required" });
+  }
+
+  const pack = await CreditPack.create(payload);
+  return res.status(201).json({ pack });
+};
+
+const updateCreditPack = async (req, res) => {
+  const payload = normalizePackPayload(req.body);
+  const pack = await CreditPack.findByIdAndUpdate(req.params.id, payload, {
+    new: true,
+    runValidators: true,
+  });
+
+  if (!pack) {
+    return res.status(404).json({ message: "Credit pack not found" });
+  }
+
+  return res.json({ pack });
+};
+
+const deleteCreditPack = async (req, res) => {
+  const pack = await CreditPack.findByIdAndDelete(req.params.id);
+  if (!pack) {
+    return res.status(404).json({ message: "Credit pack not found" });
+  }
+
+  return res.json({ message: "Credit pack deleted" });
+};
+
+const listWallets = async (_req, res) => {
+  const vendorMap = await toVendorMap();
+  await Promise.all(Object.keys(vendorMap).map((vendorId) => ensureCreditWallet(vendorId)));
+  const wallets = await getAdminCreditOverview();
+  return res.json({
+    wallets: wallets.map((wallet) => ({
+      ...wallet,
+      vendor: vendorMap[wallet.vendorId] || { vendorId: wallet.vendorId, name: "Unknown vendor" },
+    })),
+  });
+};
+
+const getWalletTransactions = async (req, res) => {
+  const transactions = await CreditTransaction.find({ vendorId: req.params.vendorId })
+    .populate({ path: "campaignId", select: "name" })
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .lean();
+
+  return res.json({ transactions });
+};
+
+const updateVendorWallet = async (req, res) => {
+  try {
+    const wallet = await applyAdminWalletAdjustment({
+      vendorId: req.params.vendorId,
+      adminId: req.admin?._id || null,
+      type: req.body.type || "controls",
+      credits: req.body.credits || 0,
+      reason: req.body.reason || "",
+      controls: {
+        customPerEmailPrice: req.body.customPerEmailPrice,
+        customDailySendLimit: req.body.customDailySendLimit,
+        customMaxRecipientsPerCampaign: req.body.customMaxRecipientsPerCampaign,
+        isFrozen: req.body.isFrozen,
+        sendingFrozen: req.body.sendingFrozen,
+      },
+    });
+
+    return res.json({ wallet });
+  } catch (error) {
+    return res.status(error.status || 500).json({ message: error.message || "Unable to update wallet" });
+  }
+};
+
 export {
   createPlan,
+  createCreditPack,
+  createCreditPackRazorpayOrder,
   createRazorpayCheckoutOrder,
+  deleteCreditPack,
   downloadMyInvoice,
+  getMyCredits,
   getMySubscription,
+  getPaygSettings,
+  getWalletTransactions,
   listInvoices,
+  listCreditPacks,
   listMyInvoices,
+  listWallets,
   listPayments,
   listPlans,
   listSubscriptions,
+  updateCreditPack,
+  updatePaygSettings,
+  updateVendorWallet,
   updatePlan,
   updateSubscription,
+  verifyCreditPackRazorpayPayment,
   verifyRazorpayCheckoutPayment,
   viewMyInvoice,
 };

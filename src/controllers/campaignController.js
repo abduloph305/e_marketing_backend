@@ -12,6 +12,7 @@ import {
   estimateCampaignRecipientCount,
 } from "../services/campaignDispatchService.js";
 import { notifyVendorActivity } from "../services/adminNotificationService.js";
+import { logUserActivity } from "../services/userActivityService.js";
 import { normalizeRecurrenceInterval, normalizeRecurrenceUnit } from "../utils/campaignRecurrence.js";
 import { buildVendorMatch, withVendorScope, withVendorWrite } from "../utils/vendorScope.js";
 import { normalizeWebsiteScope } from "../utils/audienceWebsiteScope.js";
@@ -376,6 +377,19 @@ const scheduleCampaign = async (req, res) => {
       const result = await dispatchCampaign(req.params.id, {
         mode: "scheduled",
         scopeMatch: buildVendorMatch(req),
+      });
+      await logUserActivity({
+        req,
+        module: "campaigns",
+        action: "sent",
+        title: "Campaign sent",
+        entityType: "campaign",
+        entityId: result.campaign?._id || req.params.id,
+        entityName: result.campaign?.name || "",
+        metadata: {
+          sentCount: result.sentCount,
+          scheduledAt: scheduledAtInput,
+        },
       });
       return res.json({
         message: "Campaign sent immediately because the scheduled time is due",

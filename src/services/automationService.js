@@ -12,6 +12,12 @@ import {
   normalizeWebsiteScope,
 } from "../utils/audienceWebsiteScope.js";
 import { isSubscriberEligibleForEmail } from "../utils/emailEligibility.js";
+import { recordEmailUsage } from "./billingService.js";
+import {
+  deductReservedCredits,
+  refundReservedCredits,
+  reserveCredits,
+} from "./paygBillingService.js";
 import { sendAutomationEmail } from "./sesService.js";
 
 const defaultStepTitles = {
@@ -321,13 +327,55 @@ const applySendEmailStep = async ({ step, workflow, subscriber, execution }) => 
   }
 
   const subject = step.config?.subjectOverride?.trim() || template.subject;
+  const shouldBillSend = Boolean(workflow.vendorId) && execution.context?.source !== "manual_preview";
 
-  const { messageId } = await sendAutomationEmail({
-    template,
-    recipient: buildAutomationRecipient(subscriber),
-    subject,
-    previewText: template.previewText || workflow.description || workflow.name,
-  });
+  if (shouldBillSend) {
+    await reserveCredits({
+      vendorId: workflow.vendorId,
+      credits: 1,
+      sourceType: "automation",
+      sourceId: execution._id,
+    });
+  }
+
+  let messageId = "";
+  try {
+    const result = await sendAutomationEmail({
+      template,
+      recipient: buildAutomationRecipient(subscriber),
+      subject,
+      previewText: template.previewText || workflow.description || workflow.name,
+    });
+    messageId = result.messageId;
+  } catch (error) {
+    if (shouldBillSend) {
+      await refundReservedCredits({
+        vendorId: workflow.vendorId,
+        credits: 1,
+        sourceType: "automation",
+        sourceId: execution._id,
+        metadata: { stepId: step._id, failedBeforeSend: true },
+      });
+    }
+    throw error;
+  }
+
+  if (shouldBillSend) {
+    await deductReservedCredits({
+      vendorId: workflow.vendorId,
+      credits: 1,
+      sourceType: "automation",
+      sourceId: execution._id,
+      metadata: { stepId: step._id, templateId },
+    });
+    await recordEmailUsage({
+      vendorId: workflow.vendorId,
+      count: 1,
+      sourceId: execution._id,
+      sourceType: "automation",
+      metadata: { workflowId: workflow._id, stepId: step._id },
+    });
+  }
 
   await Subscriber.findByIdAndUpdate(subscriber._id, {
     lastEmailSentAt: new Date(),

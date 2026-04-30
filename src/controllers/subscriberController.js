@@ -9,6 +9,7 @@ import SellersLoginWebsite from "../models/SellersLoginWebsite.js";
 import SuppressionEntry from "../models/SuppressionEntry.js";
 import { env } from "../config/env.js";
 import { triggerWorkflowExecutions } from "../services/automationService.js";
+import { logUserActivity } from "../services/userActivityService.js";
 import { syncVendorCustomersFromSellersLogin } from "../services/sellersloginAudienceSyncService.js";
 import { inferDeviceType } from "../utils/device.js";
 import { buildSubscriberMatch } from "../utils/subscriberFilters.js";
@@ -736,6 +737,21 @@ const createSubscriber = async (req, res) => {
       console.error("Unable to trigger welcome_signup automation", error);
     });
 
+    await logUserActivity({
+      req,
+      module: "subscribers",
+      action: "created",
+      title: "Subscriber created",
+      entityType: "subscriber",
+      entityId: subscriber._id,
+      entityName: subscriber.email,
+      metadata: {
+        email: subscriber.email,
+        status: subscriber.status,
+        source: subscriber.source,
+      },
+    });
+
     return res.status(201).json(subscriber);
   } catch (error) {
     if (error.code === 11000) {
@@ -795,6 +811,21 @@ const updateSubscriber = async (req, res) => {
       },
     );
 
+    await logUserActivity({
+      req,
+      module: "subscribers",
+      action: "updated",
+      title: "Subscriber updated",
+      entityType: "subscriber",
+      entityId: subscriber._id,
+      entityName: subscriber.email,
+      metadata: {
+        previousStatus: existingSubscriber.status,
+        status: subscriber.status,
+        email: subscriber.email,
+      },
+    });
+
     return res.json(subscriber);
   } catch (error) {
     if (error.code === 11000) {
@@ -816,6 +847,20 @@ const deleteSubscriber = async (req, res) => {
     return res.status(404).json({ message: "Subscriber not found" });
   }
 
+  await logUserActivity({
+    req,
+    module: "subscribers",
+    action: "deleted",
+    title: "Subscriber deleted",
+    entityType: "subscriber",
+    entityId: subscriber._id,
+    entityName: subscriber.email,
+    metadata: {
+      email: subscriber.email,
+      status: subscriber.status,
+    },
+  });
+
   return res.json({ message: "Subscriber deleted" });
 };
 
@@ -833,6 +878,19 @@ const bulkTagSubscribers = async (req, res) => {
     { _id: { $in: subscriberIds }, ...buildVendorMatch(req) },
     { $addToSet: { tags: { $each: tags } } },
   );
+
+  await logUserActivity({
+    req,
+    module: "subscribers",
+    action: "tagged",
+    title: "Tags assigned",
+    entityType: "subscriber",
+    status: "completed",
+    metadata: {
+      updatedCount: subscriberIds.length,
+      tags,
+    },
+  });
 
   return res.json({
     message: "Tags assigned",
@@ -872,6 +930,18 @@ const bulkUnsubscribeSubscribers = async (req, res) => {
       ),
     ),
   );
+
+  await logUserActivity({
+    req,
+    module: "subscribers",
+    action: "unsubscribed",
+    title: "Subscribers unsubscribed",
+    entityType: "subscriber",
+    metadata: {
+      updatedCount: eligibleSubscribers.length,
+      skippedCount: subscriberIds.length - eligibleSubscribers.length,
+    },
+  });
 
   return res.json({
     message: "Subscribers unsubscribed",
@@ -913,6 +983,18 @@ const bulkSuppressSubscribers = async (req, res) => {
     ),
   );
 
+  await logUserActivity({
+    req,
+    module: "subscribers",
+    action: "suppressed",
+    title: "Subscribers suppressed",
+    entityType: "subscriber",
+    metadata: {
+      updatedCount: eligibleSubscribers.length,
+      skippedCount: subscriberIds.length - eligibleSubscribers.length,
+    },
+  });
+
   return res.json({
     message: "Subscribers suppressed",
     updatedCount: eligibleSubscribers.length,
@@ -942,6 +1024,18 @@ const bulkReactivateSubscribers = async (req, res) => {
   if (emails.length) {
     await SuppressionEntry.deleteMany({ ...vendorMatch, email: { $in: emails } });
   }
+
+  await logUserActivity({
+    req,
+    module: "subscribers",
+    action: "reactivated",
+    title: "Subscribers reactivated",
+    entityType: "subscriber",
+    metadata: {
+      updatedCount: eligibleSubscribers.length,
+      skippedCount: subscriberIds.length - eligibleSubscribers.length,
+    },
+  });
 
   return res.json({
     message: "Subscribers reactivated",
@@ -987,6 +1081,20 @@ const importSubscribersFromCsv = async (req, res) => {
       importedCount += 1;
     }
   }
+
+  await logUserActivity({
+    req,
+    module: "subscribers",
+    action: "imported",
+    title: "Subscribers imported",
+    entityType: "subscriber",
+    entityName: "CSV import",
+    metadata: {
+      importedCount,
+      updatedCount,
+      totalRows: rows.length,
+    },
+  });
 
   return res.json({
     message: "CSV import completed",

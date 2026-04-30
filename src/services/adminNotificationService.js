@@ -1,4 +1,5 @@
 import AdminNotification from "../models/AdminNotification.js";
+import { logUserActivity } from "./userActivityService.js";
 
 const getVendorDisplayName = (admin = {}) =>
   String(admin.businessName || admin.name || admin.email || "Vendor").trim();
@@ -39,8 +40,8 @@ const createAdminNotification = async ({
   }
 };
 
-const notifyVendorLogin = (vendor) =>
-  createAdminNotification({
+const notifyVendorLogin = async (vendor) => {
+  const notification = await createAdminNotification({
     actor: vendor,
     title: "Vendor login",
     message: `${getVendorDisplayName(vendor)} logged in to Email Marketing`,
@@ -49,6 +50,21 @@ const notifyVendorLogin = (vendor) =>
     entityId: getVendorId(vendor),
     action: "login",
   });
+
+  await logUserActivity({
+    actor: vendor,
+    module: "login",
+    action: "login",
+    title: "Login successful",
+    description: `${getVendorDisplayName(vendor)} logged in to Email Marketing`,
+    entityType: "vendor",
+    entityId: getVendorId(vendor),
+    entityName: getVendorDisplayName(vendor),
+    status: "success",
+  });
+
+  return notification;
+};
 
 const notifyVendorActivity = ({
   actor,
@@ -61,6 +77,18 @@ const notifyVendorActivity = ({
   const vendorName = getVendorDisplayName(actor);
   const readableEntity = entityType === "automation" ? "automation" : entityType;
   const itemSuffix = itemName ? `: ${itemName}` : "";
+
+  logUserActivity({
+    actor,
+    module: entityType,
+    action,
+    title,
+    description: `${vendorName} ${action} ${readableEntity}${itemSuffix}`,
+    entityType,
+    entityId,
+    entityName: itemName,
+    status: "completed",
+  });
 
   return createAdminNotification({
     actor,

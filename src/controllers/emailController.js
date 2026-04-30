@@ -4,6 +4,7 @@ import { logCampaignActivity } from "../services/campaignService.js";
 import { sendTestEmail as sendTestEmailThroughSes } from "../services/sesService.js";
 import { sendTransactionalEmail } from "../services/sesService.js";
 import { storeEmailEvent } from "../services/emailEventService.js";
+import { logUserActivity } from "../services/userActivityService.js";
 import { buildVendorMatch } from "../utils/vendorScope.js";
 
 const campaignPopulate = [
@@ -64,6 +65,20 @@ const sendTestEmail = async (req, res) => {
       results.push({ recipientEmail, messageId });
     }
 
+    await logUserActivity({
+      req,
+      module: "campaigns",
+      action: "test_sent",
+      title: "Test email sent",
+      entityType: "campaign",
+      entityId: campaign._id,
+      entityName: campaign.name,
+      metadata: {
+        recipients: testRecipients,
+        count: results.length,
+      },
+    });
+
     return res.json({
       message: "Test email sent",
       count: results.length,
@@ -80,9 +95,23 @@ const sendCampaign = async (req, res) => {
       mode: "manual",
       scopeMatch: buildVendorMatch(req),
     });
+    await logUserActivity({
+      req,
+      module: "campaigns",
+      action: "sent",
+      title: "Campaign sent",
+      entityType: "campaign",
+      entityId: result.campaign?._id || req.params.id,
+      entityName: result.campaign?.name || "",
+      metadata: {
+        sentCount: result.sentCount,
+        failedBeforeSendCount: result.failedBeforeSendCount || 0,
+      },
+    });
     return res.json({
       message: "Campaign send completed",
       sentCount: result.sentCount,
+      failedBeforeSendCount: result.failedBeforeSendCount || 0,
       campaign: result.campaign,
     });
   } catch (error) {

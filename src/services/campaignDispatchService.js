@@ -13,7 +13,12 @@ import { storeEmailEvent } from "./emailEventService.js";
 import { buildSegmentQuery, normalizeSegmentDefinition } from "../utils/segmentEngine.js";
 import { buildWebsiteScopeMatch, combineAudienceMatches } from "../utils/audienceWebsiteScope.js";
 import { isSubscriberEligibleForEmail } from "../utils/emailEligibility.js";
-import { assertEmailQuota, recordEmailUsage } from "./billingService.js";
+import { recordEmailUsage } from "./billingService.js";
+import {
+  deductReservedCredits,
+  refundReservedCredits,
+  reserveCredits,
+} from "./paygBillingService.js";
 
 const campaignPopulate = [
   { path: "templateId" },
@@ -101,7 +106,13 @@ const dispatchCampaign = async (campaignId, { mode = "manual", scopeMatch = {} }
 
   const recipients = await buildCampaignRecipients(campaign);
   if (campaign.vendorId) {
-    await assertEmailQuota(campaign.vendorId, recipients.length);
+    await reserveCredits({
+      vendorId: campaign.vendorId,
+      credits: recipients.length,
+      sourceType: "campaign",
+      sourceId: campaign._id,
+      campaignId: campaign._id,
+    });
   }
 
   await EmailCampaign.findByIdAndUpdate(campaign._id, {
@@ -145,42 +156,79 @@ const dispatchCampaign = async (campaignId, { mode = "manual", scopeMatch = {} }
     recipientRecords.map((record) => [String(record.email).toLowerCase(), record])
   );
 
+  let sentCount = 0;
+  let failedBeforeSendCount = 0;
+
   for (const subscriber of recipients) {
     const recipientRecord = recipientMap.get(String(subscriber.email).toLowerCase());
     const trackingId = recipientRecord?._id;
 
-    const { messageId } = await sendCampaignThroughSes({
-      campaign,
-      recipient: subscriber,
-      tracking: trackingId ? buildTrackingUrls(trackingId) : null,
-    });
+    try {
+      const { messageId } = await sendCampaignThroughSes({
+        campaign,
+        recipient: subscriber,
+        tracking: trackingId ? buildTrackingUrls(trackingId) : null,
+      });
 
-    await CampaignRecipient.findOneAndUpdate(
-      { campaignId: campaign._id, email: subscriber.email, ...vendorMatch },
-      {
+      await CampaignRecipient.findOneAndUpdate(
+        { campaignId: campaign._id, email: subscriber.email, ...vendorMatch },
+        {
+          messageId,
+          status: "sent",
+          sentAt: new Date(),
+        }
+      );
+
+      await storeEmailEvent({
+        campaignId: campaign._id,
+        subscriberId: subscriber._id,
+        vendorId: campaign.vendorId || "",
+        recipientEmail: subscriber.email,
         messageId,
-        status: "sent",
-        sentAt: new Date(),
-      }
-    );
+        eventType: "send",
+        timestamp: new Date(),
+        rawPayload: { mode },
+      });
+      sentCount += 1;
+    } catch (error) {
+      failedBeforeSendCount += 1;
+      await CampaignRecipient.findOneAndUpdate(
+        { campaignId: campaign._id, email: subscriber.email, ...vendorMatch },
+        {
+          status: "rejected",
+        }
+      );
+      await logCampaignActivity(campaign._id, "recipient_send_failed", "Recipient failed before send", {
+        email: subscriber.email,
+        error: error.message,
+      });
+    }
+  }
 
-    await storeEmailEvent({
+  if (campaign.vendorId) {
+    await deductReservedCredits({
+      vendorId: campaign.vendorId,
+      credits: sentCount,
+      sourceType: "campaign",
+      sourceId: campaign._id,
       campaignId: campaign._id,
-      subscriberId: subscriber._id,
-      vendorId: campaign.vendorId || "",
-      recipientEmail: subscriber.email,
-      messageId,
-      eventType: "send",
-      timestamp: new Date(),
-      rawPayload: { mode },
+      metadata: { mode },
+    });
+    await refundReservedCredits({
+      vendorId: campaign.vendorId,
+      credits: Math.max(recipients.length - sentCount, 0),
+      sourceType: "campaign",
+      sourceId: campaign._id,
+      campaignId: campaign._id,
+      metadata: { mode, failedBeforeSendCount },
     });
   }
 
   let updatedCampaign = await EmailCampaign.findByIdAndUpdate(
     campaign._id,
     {
-      status: "sent",
-      sentAt: new Date(),
+      status: sentCount > 0 ? "sent" : "failed",
+      sentAt: sentCount > 0 ? new Date() : null,
     },
     { returnDocument: "after" }
   )
@@ -190,13 +238,14 @@ const dispatchCampaign = async (campaignId, { mode = "manual", scopeMatch = {} }
   await updateCampaignCounters(campaign._id);
   await recordEmailUsage({
     vendorId: campaign.vendorId || "",
-    count: recipients.length,
+    count: sentCount,
     sourceId: campaign._id,
     sourceType: "campaign",
     metadata: { mode },
   });
   await logCampaignActivity(campaign._id, "send_completed", "Campaign send completed", {
-    sentCount: recipients.length,
+    sentCount,
+    failedBeforeSendCount,
     mode,
   });
 
@@ -227,7 +276,8 @@ const dispatchCampaign = async (campaignId, { mode = "manual", scopeMatch = {} }
 
   return {
     campaign: updatedCampaign,
-    sentCount: recipients.length,
+    sentCount,
+    failedBeforeSendCount,
   };
 };
 

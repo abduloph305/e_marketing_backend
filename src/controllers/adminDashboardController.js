@@ -10,7 +10,9 @@ import EmailEvent from "../models/EmailEvent.js";
 import EmailTemplate from "../models/EmailTemplate.js";
 import Segment from "../models/Segment.js";
 import Subscriber from "../models/Subscriber.js";
+import UserActivityLog from "../models/UserActivityLog.js";
 import { getSubscriptionSnapshot } from "../services/billingService.js";
+import { getModuleLabel } from "../services/userActivityService.js";
 
 const startOfToday = () => {
   const date = new Date();
@@ -387,6 +389,7 @@ const listVendorActivity = async (_req, res) => {
   }
 
   const [
+    centralActivities,
     notifications,
     campaignLogs,
     recentCampaigns,
@@ -395,6 +398,10 @@ const listVendorActivity = async (_req, res) => {
     emailEventCounts,
     campaignTotals,
   ] = await Promise.all([
+    UserActivityLog.find({ vendorId: { $in: vendorKeys } })
+      .sort({ createdAt: -1 })
+      .limit(180)
+      .lean(),
     AdminNotification.find({
       $or: [{ vendorId: { $in: vendorKeys } }, { actorAdminId: { $in: vendorObjectIds } }],
     })
@@ -456,23 +463,73 @@ const listVendorActivity = async (_req, res) => {
   const totalSent = totals.sent || eventCountMap.send || 0;
   const totalBounces = totals.bounces || eventCountMap.bounce || 0;
   const totalComplaints = totals.complaints || eventCountMap.complaint || 0;
+  const today = startOfToday();
+
+  const hasCentralDuplicate = ({ entityId = "", action = "", timestamp = null }) => {
+    const legacyTime = timestamp ? new Date(timestamp).getTime() : 0;
+
+    return centralActivities.some((item) => {
+      if (entityId && String(item.entityId || "") !== String(entityId)) {
+        return false;
+      }
+
+      if (action && String(item.action || "") !== String(action)) {
+        return false;
+      }
+
+      if (!legacyTime || !item.createdAt) {
+        return false;
+      }
+
+      return Math.abs(new Date(item.createdAt).getTime() - legacyTime) < 5000;
+    });
+  };
+
+  const normalizeCentralActivity = (item) => ({
+    id: `activity-${item._id}`,
+    category: item.module || "activity",
+    module: item.module || "activity",
+    moduleLabel: getModuleLabel(item.module),
+    type: item.action || "recorded",
+    title: item.title,
+    message: item.description,
+    vendor: toVendorSummary(item.vendorId || item.actorAdminId),
+    actor: {
+      name: item.actorName || "",
+      email: item.actorEmail || "",
+    },
+    entityType: item.entityType || "",
+    entityId: String(item.entityId || ""),
+    entityName: item.entityName || "",
+    action: item.action || "",
+    status: item.status || "completed",
+    metadata: item.metadata || null,
+    ipAddress: item.ipAddress || "",
+    userAgent: item.userAgent || "",
+    timestamp: item.createdAt,
+  });
 
   const activities = [
-    ...notifications.map((item) => ({
+    ...centralActivities.map(normalizeCentralActivity),
+    ...notifications.filter((item) => item.type === "vendor_login" || !["campaign", "automation"].includes(item.entityType)).map((item) => ({
       id: `notification-${item._id}`,
       category: item.type === "vendor_login" ? "login" : "activity",
+      module: item.type === "vendor_login" ? "login" : item.entityType || "activity",
+      moduleLabel: getModuleLabel(item.type === "vendor_login" ? "login" : item.entityType),
       type: item.type || "activity",
       title: item.title,
       message: item.message,
       vendor: toVendorSummary(item.vendorId || item.actorAdminId),
       entityType: item.entityType || "",
       action: item.action || "",
-      status: item.readAt ? "read" : "new",
+      status: item.type === "vendor_login" ? "success" : item.action || "completed",
       timestamp: item.createdAt,
     })),
     ...campaignLogs.map((item) => ({
       id: `campaign-log-${item._id}`,
-      category: "campaign",
+      category: "campaigns",
+      module: "campaigns",
+      moduleLabel: "Campaigns",
       type: item.type,
       title: "Campaign activity",
       message: item.message,
@@ -542,7 +599,12 @@ const listVendorActivity = async (_req, res) => {
   return res.json({
     stats: {
       vendors: vendors.length,
-      logins: notifications.filter((item) => item.type === "vendor_login").length,
+      totalActivities: activities.length,
+      todayActivities: activities.filter((item) => new Date(item.timestamp) >= today).length,
+      failedActivities: activities.filter((item) => ["failed", "error"].includes(String(item.status || "").toLowerCase())).length,
+      logins: activities.filter((item) => item.module === "login" || item.category === "login").length,
+      campaignActions: activities.filter((item) => ["campaign", "campaigns"].includes(item.module || item.category)).length,
+      subscriberActions: activities.filter((item) => ["subscriber", "subscribers"].includes(item.module || item.category)).length,
       emailsSent: totalSent,
       campaigns: totals.campaigns || recentCampaigns.length,
       bounceRate: totalSent ? Number(((totalBounces / totalSent) * 100).toFixed(2)) : 0,
