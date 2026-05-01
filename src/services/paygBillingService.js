@@ -161,13 +161,17 @@ const getWalletSnapshot = async (vendorId, { recentLimit = 12 } = {}) => {
     return null;
   }
 
-  const [settings, packs, recentTransactions, creditsUsedThisMonth, dailyUsed] = await Promise.all([
+  const [settings, packs, recentTransactions, latestPurchase, creditsUsedThisMonth, dailyUsed] = await Promise.all([
     ensurePaygSettings(),
     ensureDefaultCreditPacks(),
     CreditTransaction.find({ vendorId: wallet.vendorId })
       .sort({ createdAt: -1 })
       .limit(recentLimit)
       .populate({ path: "campaignId", select: "name" })
+      .lean(),
+    CreditTransaction.findOne({ vendorId: wallet.vendorId, type: "purchase" })
+      .sort({ createdAt: -1 })
+      .select("credits amount currency createdAt metadata paymentId")
       .lean(),
     getMonthlyCreditUsage(wallet.vendorId),
     getDailyUsage(wallet.vendorId),
@@ -179,6 +183,17 @@ const getWalletSnapshot = async (vendorId, { recentLimit = 12 } = {}) => {
     settings,
     controls,
     packs: packs.filter((pack) => pack.isActive),
+    lastPurchasedPack: latestPurchase
+      ? {
+          packId: latestPurchase.metadata?.packId || "",
+          packName: latestPurchase.metadata?.packName || "",
+          credits: latestPurchase.credits,
+          amount: latestPurchase.amount,
+          currency: latestPurchase.currency,
+          purchasedAt: latestPurchase.createdAt,
+          paymentId: latestPurchase.paymentId,
+        }
+      : null,
     recentTransactions,
     usage: {
       creditsUsedThisMonth,

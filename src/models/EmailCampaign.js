@@ -107,6 +107,10 @@ const emailCampaignSchema = new mongoose.Schema(
         label: "",
       }),
     },
+    websiteScopes: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: () => [],
+    },
     status: {
       type: String,
       enum: campaignStatuses,

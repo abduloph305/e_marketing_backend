@@ -237,6 +237,7 @@ const updateSubscriberActivity = async (recipientEmail, eventType, timestamp, ve
 };
 
 const storeEmailEvent = async ({
+  eventId = null,
   campaignId = null,
   subscriberId = null,
   vendorId = "",
@@ -276,6 +277,7 @@ const storeEmailEvent = async ({
     }
 
     const event = await EmailEvent.create({
+      ...(eventId ? { _id: eventId } : {}),
       vendorId,
       campaignId,
       subscriberId,

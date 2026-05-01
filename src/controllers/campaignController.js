@@ -15,7 +15,7 @@ import { notifyVendorActivity } from "../services/adminNotificationService.js";
 import { logUserActivity } from "../services/userActivityService.js";
 import { normalizeRecurrenceInterval, normalizeRecurrenceUnit } from "../utils/campaignRecurrence.js";
 import { buildVendorMatch, withVendorScope, withVendorWrite } from "../utils/vendorScope.js";
-import { normalizeWebsiteScope } from "../utils/audienceWebsiteScope.js";
+import { normalizeWebsiteScope, normalizeWebsiteScopes } from "../utils/audienceWebsiteScope.js";
 
 const campaignPopulate = [
   { path: "templateId", select: "name subject previewText" },
@@ -69,6 +69,9 @@ const buildCampaignWritePayload = (payload, existingCampaign = null) => {
     (Boolean(scheduledAt) &&
       (!existingCampaign || scheduledTimeChanged || requestedStatus === "scheduled" || existingCampaign.status === "scheduled"));
 
+  const websiteScopes = normalizeWebsiteScopes(payload.websiteScopes?.length ? payload.websiteScopes : payload.websiteScope || {});
+  const primaryWebsiteScope = websiteScopes[0] || normalizeWebsiteScope(payload.websiteScope || {});
+
   const writePayload = {
     name: payload.name?.trim(),
     type: payload.type,
@@ -80,7 +83,8 @@ const buildCampaignWritePayload = (payload, existingCampaign = null) => {
     replyTo: payload.replyTo?.trim().toLowerCase() || "",
     templateId: payload.templateId || null,
     segmentId: payload.segmentId || null,
-    websiteScope: normalizeWebsiteScope(payload.websiteScope || {}),
+    websiteScope: primaryWebsiteScope,
+    websiteScopes,
     status: shouldBeScheduled
       ? "scheduled"
       : requestedStatus || existingCampaign?.status || "draft",
@@ -318,6 +322,7 @@ const duplicateCampaign = async (req, res) => {
       templateId: existingCampaign.templateId,
       segmentId: existingCampaign.segmentId || null,
       websiteScope: existingCampaign.websiteScope || {},
+      websiteScopes: existingCampaign.websiteScopes || [],
       status: "draft",
       scheduledAt: null,
       sentAt: null,

@@ -68,6 +68,10 @@ const updateCampaignRecipientStatus = async ({
     updates[eventConfig.dateField] = timestamp;
   }
 
+  if (eventType === "click") {
+    updates.openedAt = timestamp;
+  }
+
   if (campaignId) {
     updates.campaignId = campaignId;
   }

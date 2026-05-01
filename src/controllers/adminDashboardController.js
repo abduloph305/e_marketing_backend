@@ -26,6 +26,8 @@ const toNumberMap = (rows, valueKey = "count") =>
     return acc;
   }, {});
 
+const escapeRegex = (value = "") => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const listPlatformOverview = async (_req, res) => {
   const vendorQuery = { role: "vendor" };
   const today = startOfToday();
@@ -148,6 +150,148 @@ const listPlatformOverview = async (_req, res) => {
   });
 };
 
+const listEmailMarketingVendors = async (req, res) => {
+  const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 50, 10), 100);
+  const skip = (page - 1) * limit;
+  const search = String(req.query.search || "").trim();
+  const vendorQuery = {
+    role: "vendor",
+    sellersloginVendorId: { $exists: true, $ne: "" },
+    lastLoginAt: { $ne: null },
+  };
+
+  if (search) {
+    const pattern = new RegExp(escapeRegex(search), "i");
+    vendorQuery.$or = [
+      { name: pattern },
+      { email: pattern },
+      { phone: pattern },
+      { businessName: pattern },
+      { sellersloginVendorId: pattern },
+      { sellersloginAccountType: pattern },
+      { accountStatus: pattern },
+    ];
+  }
+
+  const [total, activeVendors, campaignTotals, vendors] = await Promise.all([
+    Admin.countDocuments(vendorQuery),
+    Admin.countDocuments({ ...vendorQuery, accountStatus: { $ne: "inactive" } }),
+    EmailCampaign.aggregate([
+      { $match: {} },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          sent: { $sum: "$totals.sent" },
+        },
+      },
+    ]),
+    Admin.find(vendorQuery)
+      .sort({ lastLoginAt: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+  ]);
+
+  const vendorKeys = vendors.map((vendor) => String(vendor.sellersloginVendorId || vendor._id));
+  const [
+    subscriberCounts,
+    campaignCounts,
+    templateCounts,
+    automationCounts,
+    segmentCounts,
+  ] = vendorKeys.length
+    ? await Promise.all([
+        Subscriber.aggregate([{ $match: { vendorId: { $in: vendorKeys } } }, { $group: { _id: "$vendorId", count: { $sum: 1 } } }]),
+        EmailCampaign.aggregate([
+          { $match: { vendorId: { $in: vendorKeys } } },
+          {
+            $group: {
+              _id: "$vendorId",
+              count: { $sum: 1 },
+              sent: { $sum: "$totals.sent" },
+              delivered: { $sum: "$totals.delivered" },
+              bounces: { $sum: "$totals.bounces" },
+              complaints: { $sum: "$totals.complaints" },
+            },
+          },
+        ]),
+        EmailTemplate.aggregate([{ $match: { vendorId: { $in: vendorKeys } } }, { $group: { _id: "$vendorId", count: { $sum: 1 } } }]),
+        AutomationWorkflow.aggregate([{ $match: { vendorId: { $in: vendorKeys } } }, { $group: { _id: "$vendorId", count: { $sum: 1 } } }]),
+        Segment.aggregate([{ $match: { vendorId: { $in: vendorKeys } } }, { $group: { _id: "$vendorId", count: { $sum: 1 } } }]),
+      ])
+    : [[], [], [], [], []];
+
+  const subscribersByVendor = toNumberMap(subscriberCounts);
+  const templatesByVendor = toNumberMap(templateCounts);
+  const automationsByVendor = toNumberMap(automationCounts);
+  const segmentsByVendor = toNumberMap(segmentCounts);
+  const campaignsByVendor = campaignCounts.reduce((acc, row) => {
+    acc[String(row._id || "")] = {
+      count: row.count || 0,
+      sent: row.sent || 0,
+      delivered: row.delivered || 0,
+      bounces: row.bounces || 0,
+      complaints: row.complaints || 0,
+    };
+    return acc;
+  }, {});
+
+  const vendorRows = vendors.map((vendor) => {
+    const vendorKey = String(vendor.sellersloginVendorId || vendor._id);
+    const vendorCampaigns = campaignsByVendor[vendorKey] || {};
+    const sent = vendorCampaigns.sent || 0;
+
+    return {
+      id: String(vendor._id),
+      name: vendor.name,
+      email: vendor.email,
+      phone: vendor.phone || "",
+      businessName: vendor.businessName || "",
+      sellersloginVendorId: vendor.sellersloginVendorId || "",
+      sellersloginAccountType: vendor.sellersloginAccountType || "",
+      sellersloginActorId: vendor.sellersloginActorId || "",
+      sellersloginPageAccess: vendor.sellersloginPageAccess || [],
+      sellersloginWebsiteAccess: vendor.sellersloginWebsiteAccess || [],
+      accountStatus: vendor.accountStatus || "active",
+      lastLoginAt: vendor.lastLoginAt,
+      createdAt: vendor.createdAt,
+      updatedAt: vendor.updatedAt,
+      subscribers: subscribersByVendor[vendorKey] || 0,
+      campaigns: vendorCampaigns.count || 0,
+      templates: templatesByVendor[vendorKey] || 0,
+      automations: automationsByVendor[vendorKey] || 0,
+      segments: segmentsByVendor[vendorKey] || 0,
+      emailsSent: sent,
+      delivered: vendorCampaigns.delivered || 0,
+      bounceRate: sent ? Number((((vendorCampaigns.bounces || 0) / sent) * 100).toFixed(2)) : 0,
+      complaintRate: sent ? Number((((vendorCampaigns.complaints || 0) / sent) * 100).toFixed(2)) : 0,
+    };
+  });
+
+  const totals = campaignTotals[0] || {};
+
+  return res.json({
+    pagination: {
+      limit,
+      page,
+      total,
+      totalPages: Math.max(Math.ceil(total / limit), 1),
+    },
+    stats: {
+      total,
+      active: activeVendors,
+      suspended: total - activeVendors,
+      subscribers: null,
+      campaigns: totals.count || 0,
+      emailsSent: totals.sent || 0,
+    },
+    vendors: vendorRows,
+  });
+};
+
+/*
 const listEmailMarketingVendors = async (_req, res) => {
   const vendorQuery = {
     role: "vendor",
@@ -227,6 +371,7 @@ const listEmailMarketingVendors = async (_req, res) => {
     vendors: vendorRows,
   });
 };
+*/
 
 const getEmailMarketingVendorProfile = async (req, res) => {
   const vendor = await Admin.findOne({ _id: req.params.id, role: "vendor" }).lean();

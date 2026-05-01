@@ -1,3 +1,4 @@
+import { Types } from "mongoose";
 import CampaignRecipient from "../models/CampaignRecipient.js";
 import EmailEvent from "../models/EmailEvent.js";
 import Subscriber from "../models/Subscriber.js";
@@ -42,6 +43,46 @@ const recordTrackedEvent = async (recipientId, eventType, extra = {}) => {
   });
 
   return { event, recipient };
+};
+
+const recordAutomationTrackedEvent = async (eventId, eventType, extra = {}) => {
+  if (!Types.ObjectId.isValid(eventId)) {
+    return null;
+  }
+
+  const seedEvent = await EmailEvent.findOne({
+    _id: eventId,
+    eventType: "send",
+    "rawPayload.mode": "automation",
+  }).lean();
+
+  if (!seedEvent) {
+    return null;
+  }
+
+  const event = await storeEmailEvent({
+    subscriberId: seedEvent.subscriberId || null,
+    vendorId: seedEvent.vendorId || "",
+    recipientEmail: seedEvent.recipientEmail,
+    messageId: seedEvent.messageId || `automation-${seedEvent._id}`,
+    eventType,
+    timestamp: new Date(),
+    rawPayload: {
+      ...(seedEvent.rawPayload || {}),
+      source: "automation-dashboard-tracking",
+      ...extra,
+    },
+    clickedLink: extra.clickedLink || "",
+    blockId: extra.blockId || "",
+    section: extra.section || "",
+    ctaType: extra.ctaType || "",
+    ipAddress: extra.ipAddress || "",
+    userAgent: extra.userAgent || "",
+    deviceType: extra.deviceType || inferDeviceType(extra.userAgent),
+    geo: extra.geo || null,
+  });
+
+  return { event, seedEvent };
 };
 
 const appendQueryParams = (baseUrl, params = {}) => {
@@ -109,6 +150,52 @@ const trackClick = async (req, res) => {
         utm_source: "sellerslogin_email",
         utm_medium: "email",
         utm_campaign: tracked.recipient.campaignId,
+      })
+    : String(targetUrl);
+
+  return res.redirect(attributedTargetUrl);
+};
+
+const trackAutomationOpen = async (req, res) => {
+  await recordAutomationTrackedEvent(req.params.eventId, "open", {
+    ipAddress: req.ip,
+    userAgent: req.headers["user-agent"] || "",
+  });
+
+  res.set({
+    "Content-Type": "image/gif",
+    "Content-Length": transparentGif.length,
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+  });
+
+  return res.end(transparentGif);
+};
+
+const trackAutomationClick = async (req, res) => {
+  const targetUrl = req.query.url;
+
+  if (!targetUrl) {
+    return res.status(400).json({ message: "Missing target URL" });
+  }
+
+  const tracked = await recordAutomationTrackedEvent(req.params.eventId, "click", {
+    clickedLink: String(targetUrl),
+    blockId: req.query.blockId || "",
+    section: req.query.section || "",
+    ctaType: req.query.ctaType || "",
+    ipAddress: req.ip,
+    userAgent: req.headers["user-agent"] || "",
+  });
+
+  const attributedTargetUrl = tracked?.seedEvent
+    ? appendQueryParams(targetUrl, {
+        sl_automation_event_id: tracked.seedEvent._id,
+        sl_subscriber_id: tracked.seedEvent.subscriberId,
+        utm_source: "sellerslogin_email",
+        utm_medium: "email",
+        utm_campaign: tracked.seedEvent.rawPayload?.workflowId || "automation",
       })
     : String(targetUrl);
 
@@ -198,4 +285,4 @@ const getWebhookEventDebug = async (_req, res) => {
   });
 };
 
-export { getWebhookEventDebug, ingestSesEvent, trackClick, trackOpen };
+export { getWebhookEventDebug, ingestSesEvent, trackAutomationClick, trackAutomationOpen, trackClick, trackOpen };

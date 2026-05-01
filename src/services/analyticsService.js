@@ -87,6 +87,8 @@ const summarizeEmailEvents = async (match = {}) => {
     if (row._id === "unsubscribe") summary.unsubscribes = row.count;
   });
 
+  summary.opens = Math.max(summary.opens, summary.clicks);
+
   const uniqueMap = uniqueRows.reduce(
     (accumulator, row) => {
       if (row._id === "open") {
@@ -101,6 +103,8 @@ const summarizeEmailEvents = async (match = {}) => {
     },
     { uniqueOpens: 0, uniqueClicks: 0 },
   );
+
+  uniqueMap.uniqueOpens = Math.max(uniqueMap.uniqueOpens, uniqueMap.uniqueClicks);
 
   const openRate = summary.sent ? normalizeNumber((summary.opens / summary.sent) * 100) : 0;
   const clickRate = summary.sent ? normalizeNumber((summary.clicks / summary.sent) * 100) : 0;

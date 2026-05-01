@@ -71,6 +71,10 @@ const automationWorkflowSchema = new mongoose.Schema(
         label: "",
       }),
     },
+    websiteScopes: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: () => [],
+    },
     executionCount: {
       type: Number,
       default: 0,

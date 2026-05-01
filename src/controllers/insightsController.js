@@ -1,5 +1,6 @@
 import EmailCampaign from "../models/EmailCampaign.js";
 import EmailEvent from "../models/EmailEvent.js";
+import CampaignRecipient from "../models/CampaignRecipient.js";
 import SuppressionEntry from "../models/SuppressionEntry.js";
 import { getAnalyticsSnapshot } from "../services/analyticsService.js";
 import { buildDateRangeMatch } from "../utils/dateRange.js";
@@ -50,13 +51,52 @@ const normalizeSummary = (summary = {}) => {
 };
 
 const summarizeEvents = async (match = {}, options = {}) => {
-  const [events, hardBounceCount, softBounceCount] = await Promise.all([
+  const eventRange = match.timestamp || {};
+  const baseMatch = { ...match };
+  delete baseMatch.timestamp;
+  const dateFieldMatch = (field) => {
+    if (!eventRange || !Object.keys(eventRange).length) {
+      return { [field]: { $ne: null } };
+    }
+
+    return { [field]: eventRange };
+  };
+
+  const [events, recipientRows, hardBounceCount, softBounceCount] = await Promise.all([
     EmailEvent.aggregate([
       { $match: match },
       {
         $group: {
           _id: "$eventType",
           count: { $sum: 1 },
+        },
+      },
+    ]),
+    CampaignRecipient.aggregate([
+      {
+        $match: {
+          ...baseMatch,
+          $or: [
+            dateFieldMatch("sentAt"),
+            dateFieldMatch("deliveredAt"),
+            dateFieldMatch("openedAt"),
+            dateFieldMatch("clickedAt"),
+            dateFieldMatch("bouncedAt"),
+            dateFieldMatch("complainedAt"),
+            dateFieldMatch("unsubscribedAt"),
+          ],
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          sent: { $sum: { $cond: [{ $ne: ["$sentAt", null] }, 1, 0] } },
+          delivered: { $sum: { $cond: [{ $ne: ["$deliveredAt", null] }, 1, 0] } },
+          opens: { $sum: { $cond: [{ $ne: ["$openedAt", null] }, 1, 0] } },
+          clicks: { $sum: { $cond: [{ $ne: ["$clickedAt", null] }, 1, 0] } },
+          bounces: { $sum: { $cond: [{ $ne: ["$bouncedAt", null] }, 1, 0] } },
+          complaints: { $sum: { $cond: [{ $ne: ["$complainedAt", null] }, 1, 0] } },
+          unsubscribes: { $sum: { $cond: [{ $ne: ["$unsubscribedAt", null] }, 1, 0] } },
         },
       },
     ]),
@@ -95,6 +135,20 @@ const summarizeEvents = async (match = {}, options = {}) => {
     }
   });
 
+  const recipientSummary = recipientRows[0] || {};
+  summary.sent = Math.max(summary.sent, recipientSummary.sent || 0);
+  summary.delivered = Math.max(summary.delivered, recipientSummary.delivered || 0);
+  summary.opens = Math.max(
+    summary.opens,
+    summary.clicks,
+    recipientSummary.opens || 0,
+    recipientSummary.clicks || 0,
+  );
+  summary.clicks = Math.max(summary.clicks, recipientSummary.clicks || 0);
+  summary.bounces = Math.max(summary.bounces, recipientSummary.bounces || 0);
+  summary.complaints = Math.max(summary.complaints, recipientSummary.complaints || 0);
+  summary.unsubscribeCount = Math.max(summary.unsubscribeCount, recipientSummary.unsubscribes || 0);
+
   if (options.includeSuppressedCount) {
     summary.suppressedCount = await SuppressionEntry.countDocuments({
       ...options.vendorMatch,
@@ -129,7 +183,19 @@ const buildPresetTrendDays = (startDate, endDate) => {
 };
 
 const getUniqueCounts = async (match = {}) => {
-  const uniqueEvents = await EmailEvent.aggregate([
+  const eventRange = match.timestamp || {};
+  const baseMatch = { ...match };
+  delete baseMatch.timestamp;
+  const dateFieldMatch = (field) => {
+    if (!eventRange || !Object.keys(eventRange).length) {
+      return { [field]: { $ne: null } };
+    }
+
+    return { [field]: eventRange };
+  };
+
+  const [uniqueEvents, recipientUniqueRows] = await Promise.all([
+    EmailEvent.aggregate([
     {
       $match: {
         ...match,
@@ -150,9 +216,25 @@ const getUniqueCounts = async (match = {}) => {
         count: { $sum: 1 },
       },
     },
+    ]),
+    CampaignRecipient.aggregate([
+      {
+        $match: {
+          ...baseMatch,
+          $or: [dateFieldMatch("openedAt"), dateFieldMatch("clickedAt")],
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          uniqueOpens: { $sum: { $cond: [{ $ne: ["$openedAt", null] }, 1, 0] } },
+          uniqueClicks: { $sum: { $cond: [{ $ne: ["$clickedAt", null] }, 1, 0] } },
+        },
+      },
+    ]),
   ]);
 
-  return uniqueEvents.reduce(
+  const eventCounts = uniqueEvents.reduce(
     (accumulator, item) => {
       if (item._id === "open") {
         accumulator.uniqueOpens = item.count;
@@ -166,6 +248,17 @@ const getUniqueCounts = async (match = {}) => {
     },
     { uniqueOpens: 0, uniqueClicks: 0 }
   );
+  const recipientCounts = recipientUniqueRows[0] || {};
+
+  return {
+    uniqueOpens: Math.max(
+      eventCounts.uniqueOpens,
+      eventCounts.uniqueClicks,
+      recipientCounts.uniqueOpens || 0,
+      recipientCounts.uniqueClicks || 0,
+    ),
+    uniqueClicks: Math.max(eventCounts.uniqueClicks, recipientCounts.uniqueClicks || 0),
+  };
 };
 
 const getCampaignPerformance = async (match = {}, limit = 5) => {

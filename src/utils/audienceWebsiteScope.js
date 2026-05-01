@@ -27,6 +27,30 @@ const normalizeWebsiteScope = (input = {}) => {
 const hasWebsiteScope = (scope = {}) =>
   Boolean(scope?.websiteId || scope?.websiteSlug || scope?.websiteName);
 
+const normalizeWebsiteScopes = (input = []) => {
+  const source = Array.isArray(input)
+    ? input
+    : Array.isArray(input.websiteScopes)
+      ? input.websiteScopes
+      : input.websiteScope || input
+        ? [input.websiteScope || input]
+        : [];
+
+  const unique = new Map();
+
+  source.forEach((item) => {
+    const scope = normalizeWebsiteScope(item);
+    if (!hasWebsiteScope(scope)) {
+      return;
+    }
+
+    const key = [scope.websiteId, scope.websiteSlug, scope.websiteName].join("::").toLowerCase();
+    unique.set(key, scope);
+  });
+
+  return Array.from(unique.values());
+};
+
 const buildExactMatch = (value) => new RegExp(`^${normalizeText(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
 
 const buildWebsiteScopeMatch = (scope = {}) => {
@@ -52,6 +76,16 @@ const buildWebsiteScopeMatch = (scope = {}) => {
   return conditions.length === 1 ? conditions[0] : { $or: conditions };
 };
 
+const buildWebsiteScopesMatch = (scopes = []) => {
+  const matches = normalizeWebsiteScopes(scopes).map(buildWebsiteScopeMatch).filter((match) => Object.keys(match).length);
+
+  if (!matches.length) {
+    return {};
+  }
+
+  return matches.length === 1 ? matches[0] : { $or: matches };
+};
+
 const combineAudienceMatches = (...matches) => {
   const conditions = matches.filter((match) => match && Object.keys(match).length);
 
@@ -64,7 +98,9 @@ const combineAudienceMatches = (...matches) => {
 
 export {
   buildWebsiteScopeMatch,
+  buildWebsiteScopesMatch,
   combineAudienceMatches,
   hasWebsiteScope,
   normalizeWebsiteScope,
+  normalizeWebsiteScopes,
 };

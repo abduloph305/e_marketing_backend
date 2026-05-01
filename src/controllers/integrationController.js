@@ -119,6 +119,47 @@ const resolveVendorId = (payload = {}) => {
   return String(itemVendorId || "").trim();
 };
 
+const resolveWebsiteSource = (payload = {}) => {
+  const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
+  const customFields = payload.customFields && typeof payload.customFields === "object" ? payload.customFields : {};
+
+  return {
+    websiteId: String(
+      firstTruthy(
+        payload.websiteId,
+        payload.website_id,
+        payload.siteId,
+        payload.site_id,
+        metadata.websiteId,
+        metadata.website_id,
+        customFields.audienceSourceWebsiteId,
+      ),
+    ).trim(),
+    websiteSlug: String(
+      firstTruthy(
+        payload.websiteSlug,
+        payload.website_slug,
+        payload.siteSlug,
+        payload.site_slug,
+        metadata.websiteSlug,
+        metadata.website_slug,
+        customFields.audienceSourceWebsiteSlug,
+      ),
+    ).trim(),
+    websiteName: String(
+      firstTruthy(
+        payload.websiteName,
+        payload.website_name,
+        payload.siteName,
+        payload.site_name,
+        metadata.websiteName,
+        metadata.website_name,
+        customFields.audienceSourceWebsiteName,
+      ),
+    ).trim(),
+  };
+};
+
 const resolveMarketingAttribution = (payload = {}) => {
   const metadata = payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {};
 
@@ -291,6 +332,7 @@ const resolveSubscriberPayload = (payload = {}) => {
   const shippingAddress = payload.shippingAddress ? normalizeShippingAddress(payload.shippingAddress) : null;
   const { orderDate, orderTime } = toDateParts(payload.orderPlacedAt || payload.timestamp || new Date().toISOString());
   const vendorId = resolveVendorId(payload);
+  const websiteSource = resolveWebsiteSource(payload);
 
   return {
     vendorId,
@@ -313,6 +355,9 @@ const resolveSubscriberPayload = (payload = {}) => {
       ophmatePaymentMethod: payload.paymentMethod || "",
       ophmateEventType: payload.eventType || "",
       ophmateEventTimestamp: payload.timestamp || new Date().toISOString(),
+      audienceSourceWebsiteId: websiteSource.websiteId,
+      audienceSourceWebsiteSlug: websiteSource.websiteSlug,
+      audienceSourceWebsiteName: websiteSource.websiteName,
       ophmateItems: items,
       ophmateItemsSummary: payload.orderSummary || formatItemsSummary(items),
       ophmateShippingAddress: shippingAddress,

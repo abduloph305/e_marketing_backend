@@ -11,7 +11,7 @@ import { buildNextRecurringRun } from "../utils/campaignRecurrence.js";
 import { sendCampaign as sendCampaignThroughSes } from "./sesService.js";
 import { storeEmailEvent } from "./emailEventService.js";
 import { buildSegmentQuery, normalizeSegmentDefinition } from "../utils/segmentEngine.js";
-import { buildWebsiteScopeMatch, combineAudienceMatches } from "../utils/audienceWebsiteScope.js";
+import { buildWebsiteScopeMatch, buildWebsiteScopesMatch, combineAudienceMatches } from "../utils/audienceWebsiteScope.js";
 import { isSubscriberEligibleForEmail } from "../utils/emailEligibility.js";
 import { recordEmailUsage } from "./billingService.js";
 import {
@@ -49,7 +49,7 @@ const buildCampaignRecipients = async (campaign) => {
   const baseMatch = combineAudienceMatches(
     vendorMatch,
     { status: "subscribed" },
-    buildWebsiteScopeMatch(campaign.websiteScope || {}),
+    buildWebsiteScopesMatch(campaign.websiteScopes?.length ? campaign.websiteScopes : campaign.websiteScope || {}),
     buildWebsiteScopeMatch(campaign.segmentId?.websiteScope || {}),
   );
   let match = baseMatch;
@@ -89,7 +89,13 @@ const estimateCampaignRecipientCount = async (campaignId) => {
 };
 
 const buildTrackingUrls = (recipientId) => {
-  const publicBaseUrl = env.publicAppUrl;
+  const publicBaseUrl = String(env.publicAppUrl || "").replace(/\/$/, "");
+
+  if (!publicBaseUrl || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(publicBaseUrl)) {
+    console.warn(
+      "[campaign:tracking] PUBLIC_APP_URL must be a public HTTPS URL for open/click tracking to work from inboxes.",
+    );
+  }
 
   return {
     trackingPixelUrl: `${publicBaseUrl}/api/events/track/open/${recipientId}.gif`,

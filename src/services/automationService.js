@@ -1,3 +1,4 @@
+import { Types } from "mongoose";
 import AutomationExecution from "../models/AutomationExecution.js";
 import AutomationLog from "../models/AutomationLog.js";
 import AutomationStep from "../models/AutomationStep.js";
@@ -5,11 +6,14 @@ import AutomationWorkflow from "../models/AutomationWorkflow.js";
 import EmailTemplate from "../models/EmailTemplate.js";
 import Segment from "../models/Segment.js";
 import Subscriber from "../models/Subscriber.js";
+import { env } from "../config/env.js";
 import { buildSegmentQuery, normalizeSegmentDefinition } from "../utils/segmentEngine.js";
 import {
   buildWebsiteScopeMatch,
+  buildWebsiteScopesMatch,
   combineAudienceMatches,
   normalizeWebsiteScope,
+  normalizeWebsiteScopes,
 } from "../utils/audienceWebsiteScope.js";
 import { isSubscriberEligibleForEmail } from "../utils/emailEligibility.js";
 import { recordEmailUsage } from "./billingService.js";
@@ -19,6 +23,7 @@ import {
   reserveCredits,
 } from "./paygBillingService.js";
 import { sendAutomationEmail } from "./sesService.js";
+import { storeEmailEvent } from "./emailEventService.js";
 
 const defaultStepTitles = {
   delay: "Delay",
@@ -30,16 +35,22 @@ const defaultStepTitles = {
   exit: "Exit workflow",
 };
 
-const normalizeWorkflowPayload = (payload = {}) => ({
-  name: payload.name?.trim(),
-  description: payload.description?.trim() || "",
-  trigger: payload.trigger,
-  triggerConfig: payload.triggerConfig || {},
-  entrySegmentId: payload.entrySegmentId || null,
-  websiteScope: normalizeWebsiteScope(payload.websiteScope || {}),
-  status: payload.status || "draft",
-  isActive: Boolean(payload.isActive),
-});
+const normalizeWorkflowPayload = (payload = {}) => {
+  const websiteScopes = normalizeWebsiteScopes(payload.websiteScopes?.length ? payload.websiteScopes : payload.websiteScope || {});
+  const primaryWebsiteScope = websiteScopes[0] || normalizeWebsiteScope(payload.websiteScope || {});
+
+  return {
+    name: payload.name?.trim(),
+    description: payload.description?.trim() || "",
+    trigger: payload.trigger,
+    triggerConfig: payload.triggerConfig || {},
+    entrySegmentId: payload.entrySegmentId || null,
+    websiteScope: primaryWebsiteScope,
+    websiteScopes,
+    status: payload.status || "draft",
+    isActive: Boolean(payload.isActive),
+  };
+};
 
 const normalizeSteps = (steps = []) =>
   steps.map((step, index) => ({
@@ -269,7 +280,7 @@ const subscriberMatchesWorkflow = async (workflow, subscriber) => {
 
   const definition = normalizeSegmentDefinition(segment?.definition || { rules: segment?.rules || [] });
   const match = combineAudienceMatches(
-    buildWebsiteScopeMatch(workflow.websiteScope || {}),
+    buildWebsiteScopesMatch(workflow.websiteScopes?.length ? workflow.websiteScopes : workflow.websiteScope || {}),
     buildWebsiteScopeMatch(segment?.websiteScope || {}),
     definition.filters.length ? buildSegmentQuery(definition) : {},
   );
@@ -291,6 +302,21 @@ const buildAutomationRecipient = (subscriber) => ({
   customFields: subscriber.customFields || {},
   fullName: [subscriber.firstName, subscriber.lastName].filter(Boolean).join(" ").trim(),
 });
+
+const buildAutomationTrackingUrls = (eventId) => {
+  const publicBaseUrl = String(env.publicAppUrl || "").replace(/\/$/, "");
+
+  if (!publicBaseUrl || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(publicBaseUrl)) {
+    console.warn(
+      "[automation:tracking] PUBLIC_APP_URL must be a public HTTPS URL for open/click tracking to work from inboxes.",
+    );
+  }
+
+  return {
+    trackingPixelUrl: `${publicBaseUrl}/api/events/track/automation/open/${eventId}.gif`,
+    clickTrackingUrl: `${publicBaseUrl}/api/events/track/automation/click/${eventId}`,
+  };
+};
 
 const buildPreviewSubscriber = (context = {}) => ({
   _id: null,
@@ -339,12 +365,14 @@ const applySendEmailStep = async ({ step, workflow, subscriber, execution }) => 
   }
 
   let messageId = "";
+  const trackingEventId = shouldBillSend ? new Types.ObjectId() : null;
   try {
     const result = await sendAutomationEmail({
       template,
       recipient: buildAutomationRecipient(subscriber),
       subject,
       previewText: template.previewText || workflow.description || workflow.name,
+      tracking: trackingEventId ? buildAutomationTrackingUrls(trackingEventId) : null,
     });
     messageId = result.messageId;
   } catch (error) {
@@ -358,6 +386,25 @@ const applySendEmailStep = async ({ step, workflow, subscriber, execution }) => 
       });
     }
     throw error;
+  }
+
+  if (shouldBillSend) {
+    await storeEmailEvent({
+      eventId: trackingEventId,
+      subscriberId: subscriber._id,
+      vendorId: workflow.vendorId || "",
+      recipientEmail: subscriber.email,
+      messageId,
+      eventType: "send",
+      timestamp: new Date(),
+      rawPayload: {
+        mode: "automation",
+        workflowId: workflow._id,
+        executionId: execution._id,
+        stepId: step._id,
+        templateId,
+      },
+    });
   }
 
   if (shouldBillSend) {
@@ -506,6 +553,28 @@ const createWorkflowExecution = async ({
 }) => {
   const workflow = await AutomationWorkflow.findById(workflowId).select("vendorId").lean();
   const vendorId = workflow?.vendorId || "";
+  const sourceEventId = String(context.sourceEventId || "").trim();
+
+  if (sourceEventId && subscriberId) {
+    const existingExecution = await AutomationExecution.findOne({
+      workflowId,
+      subscriberId,
+      trigger,
+      "context.sourceEventId": sourceEventId,
+    }).lean();
+
+    if (existingExecution) {
+      await logAutomationEvent(
+        workflowId,
+        "execution.skipped",
+        "Duplicate trigger skipped for the same source event",
+        { trigger, subscriberId, sourceEventId },
+      );
+
+      return null;
+    }
+  }
+
   const execution = await AutomationExecution.create({
     vendorId,
     workflowId,
@@ -828,6 +897,15 @@ const triggerWorkflowExecutions = async ({
         trigger,
       },
     });
+
+    if (!execution) {
+      results.push({
+        workflowId: String(workflow._id),
+        executionId: "",
+        status: "skipped_duplicate",
+      });
+      continue;
+    }
 
     const result = await processWorkflowExecution(execution._id);
     results.push({
